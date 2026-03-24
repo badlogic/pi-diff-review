@@ -15,10 +15,13 @@ export function composeReviewPrompt(files: DiffReviewFile[], payload: ReviewSubm
   const fileMap = new Map(files.map((file) => [file.id, file]));
   const lines: string[] = [];
 
-  lines.push("Please address the following feedback");
-  lines.push("");
-
   const overallComment = payload.overallComment.trim();
+  const hasFeedback = overallComment.length > 0 || payload.comments.length > 0;
+  if (hasFeedback) {
+    lines.push("Address the following code review feedback:");
+    lines.push("");
+  }
+
   if (overallComment.length > 0) {
     lines.push(overallComment);
     lines.push("");

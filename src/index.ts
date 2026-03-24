@@ -66,7 +66,7 @@ export default function (pi: ExtensionAPI) {
           ];
           return [
             borderTop,
-            ...lines.map((line) => `${theme.fg("border", "│")}${truncateToWidth(line, innerWidth, "...", true).padEnd(innerWidth, " ")}${theme.fg("border", "│")}`),
+            ...lines.map((line) => `${theme.fg("border", "│")}${truncateToWidth(line, innerWidth, "...", true)}${theme.fg("border", "│")}`),
             borderBottom,
           ];
         },
@@ -111,9 +111,9 @@ export default function (pi: ExtensionAPI) {
     });
     activeWindow = window;
 
-    const waitingUI = showWaitingUI(ctx);
-
     ctx.ui.notify("Opened native diff review window.", "info");
+
+    const waitingUI = showWaitingUI(ctx);
 
     try {
       const windowMessagePromise = new Promise<ReviewWindowMessage | null>((resolve, reject) => {
@@ -184,10 +184,13 @@ export default function (pi: ExtensionAPI) {
       }
 
       const prompt = composeReviewPrompt(files, message);
-      ctx.ui.setEditorText(prompt);
-      ctx.ui.notify("Inserted diff review feedback into the editor.", "info");
+      if (prompt.length > 0) {
+        ctx.ui.setEditorText(prompt);
+        ctx.ui.notify("Inserted diff review feedback into the editor.", "info");
+      }
     } catch (error) {
-      activeWaitingUIDismiss?.();
+      waitingUI.dismiss();
+      await waitingUI.promise;
       closeActiveWindow();
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(`Diff review failed: ${message}`, "error");
