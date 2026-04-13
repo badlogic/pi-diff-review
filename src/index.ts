@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
+import { Key, matchesKey, truncateToWidth, Text } from "@mariozechner/pi-tui";
 import { open, type GlimpseWindow } from "glimpseui";
-import { getReviewWindowData, loadReviewFileContents } from "./git.js";
+import { getReviewConfigLocations, loadReviewConfig, saveReviewConfig, type ReviewConfig } from "./config.js";
+import { getRepoRoot, getReviewWindowData, loadReviewFileContents, resolveBaseRef } from "./git.js";
 import { composeReviewPrompt } from "./prompt.js";
 import type {
   ReviewCancelPayload,
@@ -10,6 +11,7 @@ import type {
   ReviewHostMessage,
   ReviewRequestFilePayload,
   ReviewSubmitPayload,
+  ReviewWindowData,
   ReviewWindowMessage,
 } from "./types.js";
 import { buildReviewHtml } from "./ui.js";
@@ -30,6 +32,32 @@ type WaitingEditorResult = "escape" | "window-settled";
 
 function escapeForInlineScript(value: string): string {
   return value.replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+}
+
+function parseBaseOverride(args: string): string | undefined {
+  const trimmed = args.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function formatConfigSummary(
+  config: ReviewConfig,
+  effectiveBaseRef: string,
+  locations: { globalConfigPath: string; projectConfigPath: string },
+): string {
+  return [
+    "diff-review config",
+    "",
+    `configured defaultBaseRef: ${config.defaultBaseRef}`,
+    `effective base ref: ${effectiveBaseRef}`,
+    `preferredInitialScope: ${config.preferredInitialScope}`,
+    `preferredHideUnchanged: ${String(config.preferredHideUnchanged)}`,
+    `preferredWrapLines: ${String(config.preferredWrapLines)}`,
+    `preferredSidebarCollapsed: ${String(config.preferredSidebarCollapsed)}`,
+    `autoFetchBaseRef: ${String(config.autoFetchBaseRef)}`,
+    "",
+    `project config: ${locations.projectConfigPath}`,
+    `global config: ${locations.globalConfigPath}`,
+  ].join("\n");
 }
 
 export default function (pi: ExtensionAPI) {
@@ -111,23 +139,49 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  async function reviewRepository(ctx: ExtensionCommandContext): Promise<void> {
+  async function buildWindowData(ctx: ExtensionCommandContext, baseOverride?: string): Promise<{ config: ReviewConfig; data: ReviewWindowData }> {
+    const repoRoot = await getRepoRoot(pi, ctx.cwd);
+    const storedConfig = await loadReviewConfig(repoRoot);
+    const configuredBaseRef = baseOverride ?? storedConfig.defaultBaseRef;
+    const effectiveBaseRef = await resolveBaseRef(pi, repoRoot, configuredBaseRef, storedConfig.autoFetchBaseRef);
+    const config: ReviewConfig = {
+      ...storedConfig,
+      defaultBaseRef: effectiveBaseRef,
+    };
+    const { files } = await getReviewWindowData(pi, ctx.cwd, config);
+
+    return {
+      config,
+      data: {
+        repoRoot,
+        files,
+        defaultBaseRef: effectiveBaseRef,
+        preferredInitialScope: config.preferredInitialScope,
+        preferredHideUnchanged: config.preferredHideUnchanged,
+        preferredWrapLines: config.preferredWrapLines,
+        preferredSidebarCollapsed: config.preferredSidebarCollapsed,
+      },
+    };
+  }
+
+  async function reviewRepository(ctx: ExtensionCommandContext, baseOverride?: string): Promise<void> {
     if (activeWindow != null) {
       ctx.ui.notify("A review window is already open.", "warning");
       return;
     }
 
-    const { repoRoot, files } = await getReviewWindowData(pi, ctx.cwd);
+    const { config, data } = await buildWindowData(ctx, baseOverride);
+    const { repoRoot, files } = data;
     if (files.length === 0) {
       ctx.ui.notify("No reviewable files found.", "info");
       return;
     }
 
-    const html = buildReviewHtml({ repoRoot, files });
+    const html = buildReviewHtml(data);
     const window = open(html, {
       width: 1680,
       height: 1020,
-      title: "pi review",
+      title: `pi review • ${config.defaultBaseRef}`,
     });
     activeWindow = window;
 
@@ -146,12 +200,12 @@ export default function (pi: ExtensionAPI) {
       const cached = contentCache.get(cacheKey);
       if (cached != null) return cached;
 
-      const pending = loadReviewFileContents(pi, repoRoot, file, scope);
+      const pending = loadReviewFileContents(pi, repoRoot, file, scope, config);
       contentCache.set(cacheKey, pending);
       return pending;
     };
 
-    ctx.ui.notify("Opened native review window.", "info");
+    ctx.ui.notify(`Opened native review window (${config.defaultBaseRef}).`, "info");
 
     try {
       const terminalMessagePromise = new Promise<ReviewSubmitPayload | ReviewCancelPayload | null>((resolve, reject) => {
@@ -258,7 +312,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const prompt = composeReviewPrompt(files, message);
+      const prompt = composeReviewPrompt(files, message, config.defaultBaseRef);
       ctx.ui.setEditorText(prompt);
       ctx.ui.notify("Inserted review feedback into the editor.", "info");
     } catch (error) {
@@ -270,9 +324,51 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.registerCommand("diff-review", {
-    description: "Open a native review window with git diff, last commit, and all files scopes",
+    description: "Open a native review window. Optional args: pass a base ref for one-off branch comparison.",
+    handler: async (args, ctx) => {
+      await reviewRepository(ctx, parseBaseOverride(args));
+    },
+  });
+
+  pi.registerMessageRenderer("diff-review-config", (message) => new Text(String(message.content), 0, 0));
+
+  pi.registerCommand("diff-review-set-base", {
+    description: "Persist the default base ref for diff review. Usage: /diff-review-set-base [--global] <git-ref|default>",
+    handler: async (args, ctx) => {
+      const trimmed = args.trim();
+      if (trimmed.length === 0) {
+        ctx.ui.notify("Usage: /diff-review-set-base [--global] <git-ref|default>", "warning");
+        return;
+      }
+
+      const globalPrefix = "--global ";
+      const scope = trimmed.startsWith(globalPrefix) ? "global" : "project";
+      const baseRef = (scope === "global" ? trimmed.slice(globalPrefix.length) : trimmed).trim();
+      if (baseRef.length === 0) {
+        ctx.ui.notify("Usage: /diff-review-set-base [--global] <git-ref|default>", "warning");
+        return;
+      }
+
+      const repoRoot = await getRepoRoot(pi, ctx.cwd);
+      const currentConfig = await loadReviewConfig(repoRoot);
+      const configPath = await saveReviewConfig(repoRoot, { defaultBaseRef: baseRef }, scope);
+      const effectiveBaseRef = await resolveBaseRef(pi, repoRoot, baseRef, currentConfig.autoFetchBaseRef);
+      ctx.ui.notify(`Saved default base ref ${baseRef} (${effectiveBaseRef}) to ${configPath}`, "info");
+    },
+  });
+
+  pi.registerCommand("diff-review-config", {
+    description: "Show the effective diff-review config and config file paths",
     handler: async (_args, ctx) => {
-      await reviewRepository(ctx);
+      const repoRoot = await getRepoRoot(pi, ctx.cwd);
+      const config = await loadReviewConfig(repoRoot);
+      const effectiveBaseRef = await resolveBaseRef(pi, repoRoot, config.defaultBaseRef, config.autoFetchBaseRef);
+      const locations = getReviewConfigLocations(repoRoot);
+      pi.sendMessage({
+        customType: "diff-review-config",
+        content: formatConfigSummary(config, effectiveBaseRef, locations),
+        display: true,
+      });
     },
   });
 
