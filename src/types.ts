@@ -1,4 +1,4 @@
-export type ReviewScope = "git-diff" | "last-commit" | "all-files";
+export type ReviewScope = "base-branch" | "git-diff" | "last-commit" | "all-files";
 
 export type ChangeStatus = "modified" | "added" | "deleted" | "renamed";
 
@@ -16,8 +16,10 @@ export interface ReviewFile {
   path: string;
   worktreeStatus: ChangeStatus | null;
   hasWorkingTreeFile: boolean;
+  inBaseBranch: boolean;
   inGitDiff: boolean;
   inLastCommit: boolean;
+  baseBranch: ReviewFileComparison | null;
   gitDiff: ReviewFileComparison | null;
   lastCommit: ReviewFileComparison | null;
 }
@@ -77,7 +79,20 @@ export interface ReviewFileErrorMessage {
 
 export type ReviewHostMessage = ReviewFileDataMessage | ReviewFileErrorMessage;
 
+export interface ReviewWindowPreferences {
+  defaultBaseRef: string;
+  preferredInitialScope: ReviewScope;
+  preferredHideUnchanged: boolean;
+  preferredWrapLines: boolean;
+  preferredSidebarCollapsed: boolean;
+}
+
 export interface ReviewWindowData {
   repoRoot: string;
   files: ReviewFile[];
+  defaultBaseRef: string;
+  preferredInitialScope: ReviewScope;
+  preferredHideUnchanged: boolean;
+  preferredWrapLines: boolean;
+  preferredSidebarCollapsed: boolean;
 }

@@ -129,7 +129,10 @@
     <div class="min-w-0 flex items-center gap-3">
       <button id="toggle-sidebar-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1.5 text-xs font-medium text-review-text hover:bg-[#21262d]">Hide sidebar</button>
       <div class="min-w-0">
-        <div id="window-title" class="text-[15px] font-semibold text-white">Review</div>
+        <div class="flex items-center gap-2">
+          <div id="window-title" class="text-[15px] font-semibold text-white">Review</div>
+          <span id="base-ref-badge" class="rounded-md border border-review-border bg-review-panel px-2 py-0.5 text-[10px] font-medium text-review-muted"></span>
+        </div>
         <div id="repo-root" class="truncate text-[11px] text-review-muted"></div>
       </div>
     </div>
@@ -149,6 +152,7 @@
         <div class="text-[10px] text-review-muted">Fuzzy filter</div>
       </div>
       <div class="mb-3 flex flex-wrap items-center gap-2">
+        <button id="scope-base-branch-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-2.5 py-1 text-[11px] font-medium text-review-text hover:bg-[#21262d]">Base branch</button>
         <button id="scope-diff-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-2.5 py-1 text-[11px] font-medium text-review-text hover:bg-[#21262d]">Git diff</button>
         <button id="scope-last-commit-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-2.5 py-1 text-[11px] font-medium text-review-text hover:bg-[#21262d]">Last commit</button>
         <button id="scope-all-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-2.5 py-1 text-[11px] font-medium text-review-text hover:bg-[#21262d]">All files</button>

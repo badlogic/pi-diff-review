@@ -2,19 +2,31 @@ const reviewData = JSON.parse(document.getElementById("diff-review-data").textCo
 
 const state = {
   activeFileId: null,
-  currentScope: reviewData.files.some((file) => file.inGitDiff)
-    ? "git-diff"
-    : reviewData.files.some((file) => file.inLastCommit)
-      ? "last-commit"
-      : "all-files",
+  currentScope: reviewData.preferredInitialScope && reviewData.files.some((file) => file[
+    reviewData.preferredInitialScope === "base-branch"
+      ? "inBaseBranch"
+      : reviewData.preferredInitialScope === "git-diff"
+        ? "inGitDiff"
+        : reviewData.preferredInitialScope === "last-commit"
+          ? "inLastCommit"
+          : "hasWorkingTreeFile"
+  ])
+    ? reviewData.preferredInitialScope
+    : reviewData.files.some((file) => file.inBaseBranch)
+      ? "base-branch"
+      : reviewData.files.some((file) => file.inGitDiff)
+        ? "git-diff"
+        : reviewData.files.some((file) => file.inLastCommit)
+          ? "last-commit"
+          : "all-files",
   comments: [],
   overallComment: "",
-  hideUnchanged: false,
-  wrapLines: true,
+  hideUnchanged: reviewData.preferredHideUnchanged ?? true,
+  wrapLines: reviewData.preferredWrapLines ?? false,
   collapsedDirs: {},
   reviewedFiles: {},
   scrollPositions: {},
-  sidebarCollapsed: false,
+  sidebarCollapsed: reviewData.preferredSidebarCollapsed ?? false,
   fileFilter: "",
   fileContents: {},
   fileErrors: {},
@@ -25,10 +37,12 @@ const sidebarEl = document.getElementById("sidebar");
 const sidebarTitleEl = document.getElementById("sidebar-title");
 const sidebarSearchInputEl = document.getElementById("sidebar-search-input");
 const toggleSidebarButton = document.getElementById("toggle-sidebar-button");
+const scopeBaseBranchButton = document.getElementById("scope-base-branch-button");
 const scopeDiffButton = document.getElementById("scope-diff-button");
 const scopeLastCommitButton = document.getElementById("scope-last-commit-button");
 const scopeAllButton = document.getElementById("scope-all-button");
 const windowTitleEl = document.getElementById("window-title");
+const baseRefBadgeEl = document.getElementById("base-ref-badge");
 const repoRootEl = document.getElementById("repo-root");
 const fileTreeEl = document.getElementById("file-tree");
 const summaryEl = document.getElementById("summary");
@@ -46,6 +60,7 @@ const toggleWrapButton = document.getElementById("toggle-wrap-button");
 
 repoRootEl.textContent = reviewData.repoRoot || "";
 windowTitleEl.textContent = "Review";
+baseRefBadgeEl.textContent = reviewData.defaultBaseRef ? `base ${reviewData.defaultBaseRef}` : "no base ref";
 
 let monacoApi = null;
 let diffEditor = null;
@@ -86,6 +101,7 @@ function inferLanguage(path) {
 
 function scopeLabel(scope) {
   switch (scope) {
+    case "base-branch": return "Base branch";
     case "git-diff": return "Git diff";
     case "last-commit": return "Last commit";
     default: return "All files";
@@ -94,6 +110,8 @@ function scopeLabel(scope) {
 
 function scopeHint(scope) {
   switch (scope) {
+    case "base-branch":
+      return `Review branch changes from merge-base(${reviewData.defaultBaseRef}, HEAD) to HEAD. Hover or click line numbers in the gutter to add an inline comment.`;
     case "git-diff":
       return "Review working tree changes against HEAD. Hover or click line numbers in the gutter to add an inline comment.";
     case "last-commit":
@@ -123,6 +141,8 @@ function isFileReviewed(fileId) {
 
 function getScopedFiles() {
   switch (state.currentScope) {
+    case "base-branch":
+      return reviewData.files.filter((file) => file.inBaseBranch);
     case "git-diff":
       return reviewData.files.filter((file) => file.inGitDiff);
     case "last-commit":
@@ -150,6 +170,7 @@ function activeFile() {
 
 function getScopeComparison(file, scope = state.currentScope) {
   if (!file) return null;
+  if (scope === "base-branch") return file.baseBranch;
   if (scope === "git-diff") return file.gitDiff;
   if (scope === "last-commit") return file.lastCommit;
   return null;
@@ -477,6 +498,7 @@ function updateSidebarLayout() {
 
 function updateScopeButtons() {
   const counts = {
+    baseBranch: reviewData.files.filter((file) => file.inBaseBranch).length,
     diff: reviewData.files.filter((file) => file.inGitDiff).length,
     lastCommit: reviewData.files.filter((file) => file.inLastCommit).length,
     all: reviewData.files.filter((file) => file.hasWorkingTreeFile).length,
@@ -491,10 +513,12 @@ function updateScopeButtons() {
         : "cursor-pointer rounded-md border border-review-border bg-review-panel px-2.5 py-1 text-[11px] font-medium text-review-text hover:bg-[#21262d]";
   };
 
+  scopeBaseBranchButton.textContent = `Base branch${counts.baseBranch > 0 ? ` (${counts.baseBranch})` : ""}`;
   scopeDiffButton.textContent = `Git diff${counts.diff > 0 ? ` (${counts.diff})` : ""}`;
   scopeLastCommitButton.textContent = `Last commit${counts.lastCommit > 0 ? ` (${counts.lastCommit})` : ""}`;
   scopeAllButton.textContent = `All files${counts.all > 0 ? ` (${counts.all})` : ""}`;
 
+  applyButtonClasses(scopeBaseBranchButton, state.currentScope === "base-branch", counts.baseBranch === 0);
   applyButtonClasses(scopeDiffButton, state.currentScope === "git-diff", counts.diff === 0);
   applyButtonClasses(scopeLastCommitButton, state.currentScope === "last-commit", counts.lastCommit === 0);
   applyButtonClasses(scopeAllButton, state.currentScope === "all-files", counts.all === 0);
@@ -1007,6 +1031,7 @@ function setupMonaco() {
 
 function switchScope(scope) {
   const hasScopeFiles = {
+    "base-branch": reviewData.files.some((file) => file.inBaseBranch),
     "git-diff": reviewData.files.some((file) => file.inGitDiff),
     "last-commit": reviewData.files.some((file) => file.inLastCommit),
     "all-files": reviewData.files.some((file) => file.hasWorkingTreeFile),
@@ -1067,6 +1092,10 @@ toggleReviewedButton.addEventListener("click", () => {
   if (!file) return;
   state.reviewedFiles[file.id] = !isFileReviewed(file.id);
   renderTree();
+});
+
+scopeBaseBranchButton.addEventListener("click", () => {
+  switchScope("base-branch");
 });
 
 scopeDiffButton.addEventListener("click", () => {
