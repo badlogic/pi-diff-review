@@ -946,6 +946,14 @@ window.__reviewReceive = function (message) {
   }
 };
 
+if (Array.isArray(window.__reviewReceiveQueue)) {
+  const queuedMessages = window.__reviewReceiveQueue.slice();
+  window.__reviewReceiveQueue.length = 0;
+  queuedMessages.forEach((message) => {
+    window.__reviewReceive(message);
+  });
+}
+
 function setupMonaco() {
   window.require.config({
     paths: {
