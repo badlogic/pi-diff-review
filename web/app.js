@@ -12,11 +12,12 @@ const state = {
   comments: [],
   overallComment: "",
   hideUnchanged: false,
-  wrapLines: true,
+  wrapLines: false,
   collapsedDirs: {},
   reviewedFiles: {},
   scrollPositions: {},
   sidebarCollapsed: false,
+  sidebarWidth: 280,
   fileFilter: "",
   selectedCommitSha: reviewData.commits?.[0]?.sha || null,
   fileContents: {},
@@ -25,6 +26,7 @@ const state = {
 };
 
 const sidebarEl = document.getElementById("sidebar");
+const sidebarResizerEl = document.getElementById("sidebar-resizer");
 const sidebarTitleEl = document.getElementById("sidebar-title");
 const sidebarSearchInputEl = document.getElementById("sidebar-search-input");
 const toggleSidebarButton = document.getElementById("toggle-sidebar-button");
@@ -480,13 +482,23 @@ function renderSearchResults(files) {
   });
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getMaxSidebarWidth() {
+  const layoutWidth = document.getElementById("content-layout")?.clientWidth || window.innerWidth;
+  return Math.max(220, Math.min(720, layoutWidth - 360));
+}
+
 function updateSidebarLayout() {
   const collapsed = state.sidebarCollapsed;
-  sidebarEl.style.width = collapsed ? "0px" : "280px";
-  sidebarEl.style.minWidth = collapsed ? "0px" : "280px";
-  sidebarEl.style.flexBasis = collapsed ? "0px" : "280px";
-  sidebarEl.style.borderRightWidth = collapsed ? "0px" : "1px";
+  const width = `${clamp(state.sidebarWidth, 220, getMaxSidebarWidth())}px`;
+  sidebarEl.style.width = collapsed ? "0px" : width;
+  sidebarEl.style.minWidth = collapsed ? "0px" : width;
+  sidebarEl.style.flexBasis = collapsed ? "0px" : width;
   sidebarEl.style.pointerEvents = collapsed ? "none" : "auto";
+  sidebarResizerEl.style.display = collapsed ? "none" : "block";
   toggleSidebarButton.textContent = collapsed ? "Show sidebar" : "Hide sidebar";
 }
 
@@ -998,18 +1010,19 @@ function setupMonaco() {
     diffEditor = monacoApi.editor.createDiffEditor(editorContainerEl, {
       automaticLayout: true,
       renderSideBySide: activeFileShowsDiff(),
+      enableSplitViewResizing: true,
       readOnly: true,
       originalEditable: false,
       minimap: { enabled: true, renderCharacters: false, showSlider: "always", size: "proportional" },
       renderOverviewRuler: true,
-      diffWordWrap: "on",
+      diffWordWrap: "off",
       scrollBeyondLastLine: false,
       lineNumbersMinChars: 4,
       glyphMargin: true,
       folding: true,
       lineDecorationsWidth: 10,
       overviewRulerBorder: false,
-      wordWrap: "on",
+      wordWrap: "off",
     });
 
     createGlyphHoverActions(diffEditor.getOriginalEditor(), "original");
@@ -1056,6 +1069,39 @@ function switchScope(scope) {
   renderAll({ restoreFileScroll: true });
   const file = activeFile();
   if (file) ensureFileLoaded(file.id, state.currentScope);
+}
+
+function setupSidebarResizer() {
+  let startX = 0;
+  let startWidth = 0;
+
+  const finishResize = () => {
+    document.body.classList.remove("is-resizing-panels");
+    sidebarResizerEl.classList.remove("is-dragging");
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", finishResize);
+    window.removeEventListener("pointercancel", finishResize);
+    requestAnimationFrame(layoutEditor);
+  };
+
+  const onPointerMove = (event) => {
+    const maxWidth = getMaxSidebarWidth();
+    state.sidebarWidth = clamp(startWidth + event.clientX - startX, 220, maxWidth);
+    updateSidebarLayout();
+    layoutEditor();
+  };
+
+  sidebarResizerEl.addEventListener("pointerdown", (event) => {
+    if (state.sidebarCollapsed) return;
+    event.preventDefault();
+    startX = event.clientX;
+    startWidth = sidebarEl.getBoundingClientRect().width || state.sidebarWidth;
+    document.body.classList.add("is-resizing-panels");
+    sidebarResizerEl.classList.add("is-dragging");
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", finishResize);
+    window.addEventListener("pointercancel", finishResize);
+  });
 }
 
 submitButton.addEventListener("click", () => {
@@ -1157,6 +1203,7 @@ commitSelectEl.addEventListener("change", () => {
 });
 
 populateCommitSelect();
+setupSidebarResizer();
 ensureActiveFileForScope();
 renderTree();
 renderFileComments();
