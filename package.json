@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "tsgo --noEmit",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "pi": {
     "extensions": [
