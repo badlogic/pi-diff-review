@@ -69,6 +69,48 @@
     height: 100% !important;
   }
 
+  #sidebar-resizer {
+    width: 6px;
+    cursor: col-resize;
+    flex: 0 0 6px;
+    background: #30363d;
+    opacity: 0.65;
+    transition: background 120ms ease, opacity 120ms ease;
+  }
+
+  #sidebar-resizer:hover,
+  #sidebar-resizer.is-dragging {
+    background: #58a6ff;
+    opacity: 1;
+  }
+
+  body.is-resizing-panels,
+  body.is-resizing-panels * {
+    cursor: col-resize !important;
+    user-select: none !important;
+  }
+
+  .monaco-sash.vertical,
+  .monaco-diff-editor .sash.vertical {
+    cursor: col-resize !important;
+  }
+
+  .monaco-diff-editor .monaco-sash.vertical {
+    background: rgba(48, 54, 61, 0.65) !important;
+    transition: none !important;
+  }
+
+  .monaco-diff-editor .monaco-sash.vertical:hover,
+  .monaco-diff-editor .monaco-sash.vertical.active,
+  .monaco-diff-editor .monaco-sash.vertical.hover {
+    background: #58a6ff !important;
+  }
+
+  .monaco-diff-editor .monaco-sash.vertical::before,
+  .monaco-diff-editor .monaco-sash.vertical::after {
+    transition: none !important;
+  }
+
   .monaco-editor .view-zones {
     z-index: 10;
   }
@@ -142,7 +184,7 @@
   </div>
 
   <div id="content-layout" class="flex min-h-0 flex-1">
-    <aside id="sidebar" class="flex min-h-0 shrink-0 flex-col border-r border-review-border bg-[#0d1117]" style="width: 280px; min-width: 280px; flex-basis: 280px; overflow: hidden;">
+    <aside id="sidebar" class="flex min-h-0 shrink-0 flex-col bg-[#0d1117]" style="width: 280px; min-width: 280px; flex-basis: 280px; overflow: hidden;">
     <div class="border-b border-review-border px-4 py-3">
       <div class="mb-2 flex items-center justify-between gap-2">
         <div id="sidebar-title" class="text-[11px] font-semibold uppercase tracking-wider text-review-muted">Files</div>
@@ -159,6 +201,7 @@
     </div>
     <div id="file-tree" class="scrollbar-thin min-h-0 flex-1 overflow-auto px-2 pb-2"></div>
   </aside>
+    <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file panel" title="Resize file panel"></div>
 
     <main id="main-pane" class="flex min-h-0 min-w-0 flex-1 flex-col bg-[#0d1117]">
     <div class="flex items-center justify-between gap-4 border-b border-review-border bg-[#0d1117] px-4 py-2">
