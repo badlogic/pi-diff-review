@@ -1,2 +1,4 @@
 node_modules/
 .pi/hf-sessions/
+.worktrees
+.worktrees/
