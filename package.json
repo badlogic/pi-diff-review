@@ -1,12 +1,32 @@
 {
-  "name": "pi-diff-review",
+  "name": "pi-diff-review-cockpit",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.1.0",
   "type": "module",
-  "scripts": {
-    "check": "tsgo --noEmit",
-    "prepare": "husky"
+  "bin": {
+    "pi-diff-review": "./bin/pi-diff-review.mjs"
   },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "os": [
+    "darwin"
+  ],
+  "scripts": {
+    "build:web": "node ./scripts/build-web.mjs",
+    "cli": "node ./bin/pi-diff-review.mjs",
+    "check": "tsgo --noEmit --allowJs",
+    "prepare": "npm run build:web",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "src",
+    "types",
+    "web",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./src/index.ts"
@@ -16,12 +36,25 @@
     "glimpseui": "^0.8.1"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": "^0.80.1",
+    "@earendil-works/pi-coding-agent": "^0.80.1",
+    "@earendil-works/pi-tui": "^0.80.1"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.80.6",
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6",
+    "@tailwindcss/cli": "^4.3.2",
     "@types/node": "^24.5.2",
     "@typescript/native-preview": "^7.0.0-dev.20260313.1",
+    "esbuild": "^0.28.1",
     "husky": "^9.1.7",
+    "monaco-editor": "^0.55.1",
+    "tailwindcss": "^4.3.2",
+    "tsx": "^4.20.6",
     "typescript": "^5.9.2"
+  },
+  "overrides": {
+    "dompurify": "3.4.11"
   }
 }
