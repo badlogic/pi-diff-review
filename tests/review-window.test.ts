@@ -8,6 +8,7 @@ class FakeWindow extends EventEmitter {
   readonly calls: string[] = [];
   readonly sent: string[] = [];
   readonly shown: Array<{ title?: string }> = [];
+  readonly presentationEvents: string[] = [];
   closeCount = 0;
 
   override on(event: string, listener: (...args: any[]) => void): this {
@@ -26,10 +27,12 @@ class FakeWindow extends EventEmitter {
 
   send(source: string): void {
     this.sent.push(source);
+    this.presentationEvents.push("send");
   }
 
   show(options: { title?: string }): void {
     this.shown.push(options);
+    this.presentationEvents.push("show");
   }
 
   close(): void {
@@ -126,6 +129,63 @@ test("attaches listeners before loading the static shell and waits for boot befo
 
   window.emit("message", frame(context, { type: "request-file", requestId: "request-1", fileId: "file-1", scope: "git-diff" }));
   assert.deepEqual(dispatched, ["request-file"]);
+});
+
+test("defers presentation until a booted renderer is released", () => {
+  const window = new FakeWindow();
+  const controller = createReviewWindowController({
+    window,
+    shellPath: "/shell.html",
+    title: "Diff review",
+    bootstrap: {} as never,
+    protocol,
+    presentationReady: false,
+    onMessage: () => {},
+    onClosed: () => {},
+    onError: () => {},
+  });
+
+  controller.start();
+  window.emit("message", { type: "renderer-ready" });
+  const bootstrap = bootstrapFrom(window.sent[0]);
+  const context: RendererProtocolContext = { ...protocol, sessionId: bootstrap.sessionId, capability: bootstrap.capability };
+  window.emit("message", frame(context, { type: "renderer-booted" }));
+
+  assert.deepEqual(window.shown, []);
+  controller.releasePresentation();
+  controller.releasePresentation();
+  assert.deepEqual(window.shown, [{ title: "Diff review" }]);
+});
+
+test("delivers queued host state before presenting a renderer released before boot", () => {
+  const window = new FakeWindow();
+  const controller = createReviewWindowController({
+    window,
+    shellPath: "/shell.html",
+    title: "Diff review",
+    bootstrap: {} as never,
+    protocol,
+    presentationReady: false,
+    onMessage: () => {},
+    onClosed: () => {},
+    onError: () => {},
+  });
+
+  controller.start();
+  assert.equal(controller.sendHostMessage({ type: "review-map-result", map: {} }), true);
+  controller.releasePresentation();
+  assert.deepEqual(window.shown, []);
+
+  window.emit("message", { type: "renderer-ready" });
+  const bootstrap = bootstrapFrom(window.sent[0]);
+  const context: RendererProtocolContext = { ...protocol, sessionId: bootstrap.sessionId, capability: bootstrap.capability };
+  window.emit("message", frame(context, { type: "renderer-booted" }));
+  assert.deepEqual(window.shown, [{ title: "Diff review" }]);
+  assert.deepEqual(window.presentationEvents.slice(-2), ["send", "show"]);
+
+  controller.dispose();
+  controller.releasePresentation();
+  assert.equal(window.shown.length, 1);
 });
 
 test("host injection rejects malformed GitHub context results", () => {

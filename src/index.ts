@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
+import { Type } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { open, type GlimpseWindow } from "glimpseui";
@@ -21,9 +22,21 @@ import {
 import { composeReviewPrompt } from "./prompt.js";
 import { compileProvisionalReviewMap } from "./provisional-review-map.js";
 import { extractReviewChangeUnits } from "./review-change-units.js";
-import { buildReviewMapPlannerInput } from "./review-map-planner.js";
-import { runSemanticReviewMap } from "./review-map-runner.js";
-import { runReviewMapScouts } from "./review-map-scout.js";
+import {
+  completeReviewMapPresentation,
+  reviewMapNeedsPresentationGate,
+} from "./review-map-presentation.js";
+import {
+  buildReviewMapPlannerInput,
+  REVIEW_MAP_PLANNER_OUTPUT_SCHEMA,
+  REVIEW_MAP_PLANNER_PROMPT,
+} from "./review-map-planner.js";
+import { createFallbackReviewMap, runSemanticReviewMap } from "./review-map-runner.js";
+import {
+  REVIEW_MAP_SCOUT_OUTPUT_SCHEMA,
+  REVIEW_MAP_SCOUT_PROMPT,
+  runReviewMapScouts,
+} from "./review-map-scout.js";
 import { completeStructuredText } from "./structured-model-completion.js";
 import { type RendererProtocolContext } from "./renderer-protocol.js";
 import {
@@ -80,9 +93,13 @@ import type {
 } from "./types.js";
 import { getReviewShellPath } from "./ui.js";
 
-const REVIEW_MAP_SCOUT_PROMPT = `You inspect bounded diff change units for a code-review map. Return strict JSON only with {"facts":[...]}. Each fact must contain unitIds, intent, changedContracts, callersAndDependencies, removedBehavior, invariants, testEvidence, evidenceGaps, candidateRelationships, confidence, and unresolvedQuestions. Return facts, not chapters, findings, or verdicts. Reference only supplied unit IDs.`;
-const REVIEW_MAP_PLANNER_PROMPT = `You design a human review journey for a pull request. Return strict JSON only with story and chapters. Organize by end-to-end behavior, not directories or file types. Pair tests with the behavior they verify. Every chapter needs id, title, objective, whyItMatters, priority, priorityReason, dependsOn, reviewQuestions, changeFlow, visits, testEvidence, and exitCriteria. Every visit needs id, fileId, changeUnitIds, role, reason, and focus. Assign each supplied unit exactly once and reference no invented IDs.`;
-const REVIEW_MAP_CRITIC_PROMPT = `You are an adversarial critic of a proposed human code-review journey. Return strict JSON only: {"action":"accept"|"repair","diagnostics":[...],"instructions":"..."}. Require behavioral chapters, coherent dependency order, implementation paired with evidence or an explicit gap, no generic Tests or Miscellaneous buckets, and manageable chapter scope. Use repair when the proposal is shallow or unsupported.`;
+const REVIEW_MAP_STRATEGY_VERSION = "semantic-map-v2";
+const REVIEW_MAP_CRITIC_PROMPT = `You are an adversarial critic of a proposed human code-review journey. Return strict JSON only: {"action":"accept"|"repair","diagnostics":[...],"instructions":"..."}. Require behavioral chapters, coherent dependency order, implementation paired with evidence or an explicit gap, no generic Tests or Miscellaneous buckets, and manageable chapter scope. Use repair when the proposal is shallow or unsupported. Return at most 8 diagnostics of at most 240 characters each and keep repair instructions within 1,500 characters.`;
+const REVIEW_MAP_CRITIC_OUTPUT_SCHEMA = Type.Object({
+  action: Type.Union([Type.Literal("accept"), Type.Literal("repair")]),
+  diagnostics: Type.Array(Type.String({ maxLength: 240 }), { maxItems: 8 }),
+  instructions: Type.String({ maxLength: 1_500 }),
+});
 
 function isSubmitPayload(value: ReviewWindowMessage): value is ReviewSubmitPayload {
   return value.type === "submit";
@@ -305,7 +322,7 @@ export default function (pi: ExtensionAPI) {
           const borderBottom = theme.fg("border", `╰${"─".repeat(innerWidth)}╯`);
           const lines = [
             theme.fg("accent", theme.bold("Waiting for review")),
-            "The native review window is open.",
+            "The review window will appear when the review map is ready.",
             "Press Escape to cancel and close the review window.",
           ];
           return [
@@ -407,7 +424,7 @@ export default function (pi: ExtensionAPI) {
     const restoredMap = sessionResolution.snapshot?.map;
     let reviewMap = restoredMap?.version === 2
       && restoredMap.sourceFingerprint === fingerprint.hash
-      && (restoredMap.strategyVersion === "provisional-map-v1" || restoredMap.strategyVersion === "semantic-map-v1")
+      && (restoredMap.strategyVersion === "provisional-map-v1" || restoredMap.strategyVersion === REVIEW_MAP_STRATEGY_VERSION)
       ? restoredMap
       : compileProvisionalReviewMap({
           sourceFingerprint: fingerprint.hash,
@@ -680,7 +697,7 @@ export default function (pi: ExtensionAPI) {
       return pending;
     };
 
-    ctx.ui.notify("Opened native review window.", "info");
+    ctx.ui.notify("Preparing native review window.", "info");
 
     let reviewLifecycle: ReviewHostPublishLifecycle<ReviewSubmitPayload | ReviewCancelPayload> | null = null;
     try {
@@ -1078,6 +1095,37 @@ export default function (pi: ExtensionAPI) {
         }
       };
 
+      const presentCompletedReviewMap = async (result: ReviewMap): Promise<boolean> =>
+        await completeReviewMapPresentation({
+          map: result,
+          canPresent: canUpdateReviewWindow,
+          apply: (map) => {
+            reviewMap = map;
+            analysis = {
+              ...analysis,
+              chapters: map.chapters,
+              coverage: {
+                fileCount: map.coverage.fileCount,
+                originalLineCount: map.coverage.originalLineCount,
+                modifiedLineCount: map.coverage.modifiedLineCount,
+                unmappedFileCount: map.coverage.unmappedFileCount,
+                unmappedOriginalLineCount: map.coverage.unmappedOriginalLineCount,
+                unmappedModifiedLineCount: map.coverage.unmappedModifiedLineCount,
+              },
+            };
+            reviewData.map = map;
+            reviewData.analysis = analysis;
+            sessionSnapshot = { ...(sessionSnapshot ?? {}), map };
+            queueSessionSave(sessionSnapshot);
+          },
+          persist: flushSessionSave,
+          updateProtocol: (map) => {
+            windowController?.updateProtocolContext(rendererProtocolContext(files, dataset.commits, analysis, map));
+          },
+          deliver: (map) => windowController?.sendHostMessage({ type: "review-map-result", map }) ?? false,
+          release: () => windowController?.releasePresentation(),
+        });
+
       try {
         windowController = createReviewWindowController({
           window,
@@ -1085,24 +1133,26 @@ export default function (pi: ExtensionAPI) {
           title,
           bootstrap: reviewData,
           protocol: rendererProtocolContext(files, dataset.commits, analysis, reviewMap),
+          presentationReady: !reviewMapNeedsPresentationGate(reviewMap),
           onMessage,
           onClosed: lifecycle.callbacks.onRendererClosed,
           onError: lifecycle.callbacks.onControllerError,
         });
         windowController.start();
 
-        if (reviewMap.status !== "semantic" && reviewMap.status !== "semantic-repaired") {
+        if (reviewMapNeedsPresentationGate(reviewMap)) {
+          const provisionalMap = reviewMap;
           const scoutCache = new Map<string, string>();
           const focusedFileById = new Map(focusedFiles.map((file) => [file.id, file]));
           void (async () => {
             const result = await runSemanticReviewMap({
               sourceFingerprint: fingerprint.hash,
-              strategyVersion: "semantic-map-v1",
+              strategyVersion: REVIEW_MAP_STRATEGY_VERSION,
               units,
-              provisionalMap: reviewMap,
+              provisionalMap,
               runScouts: async () => await runReviewMapScouts({
                 sourceFingerprint: fingerprint.hash,
-                strategyVersion: "semantic-map-v1",
+                strategyVersion: REVIEW_MAP_STRATEGY_VERSION,
                 units,
                 getPatch: async (unit) => {
                   const file = focusedFileById.get(unit.fileId);
@@ -1116,22 +1166,26 @@ export default function (pi: ExtensionAPI) {
                   input,
                   phase: "map.scout",
                   depth: aiReviewConfig.depth,
+                  structuredOutput: true,
+                  structuredOutputSchema: REVIEW_MAP_SCOUT_OUTPUT_SCHEMA,
                 }),
                 cache: scoutCache,
                 maxInputChars: aiReviewConfig.maxChapterPatchChars,
                 concurrency: aiReviewConfig.parallelChapterReviews,
               }),
-              plan: async (facts, repairInstructions) => {
-                const baseInput = JSON.parse(buildReviewMapPlannerInput(dataset, units, facts)) as Record<string, unknown>;
-                return await completeStructuredText({
-                  ctx,
-                  route: aiReviewConfig.mapPhases.planner,
-                  systemPrompt: REVIEW_MAP_PLANNER_PROMPT,
-                  input: JSON.stringify({ ...baseInput, ...(repairInstructions == null ? {} : { repairInstructions }) }),
-                  phase: "map.planner",
-                  depth: aiReviewConfig.depth,
-                });
-              },
+              plan: async (facts, repairInstructions) => await completeStructuredText({
+                ctx,
+                route: aiReviewConfig.mapPhases.planner,
+                systemPrompt: REVIEW_MAP_PLANNER_PROMPT,
+                input: buildReviewMapPlannerInput(dataset, units, facts, {
+                  maxInputChars: aiReviewConfig.maxChapterPatchChars,
+                  ...(repairInstructions == null ? {} : { repairInstructions }),
+                }),
+                phase: "map.planner",
+                depth: aiReviewConfig.depth,
+                structuredOutput: true,
+                structuredOutputSchema: REVIEW_MAP_PLANNER_OUTPUT_SCHEMA,
+              }),
               criticize: async (planJson, scoutDiagnostics) => await completeStructuredText({
                 ctx,
                 route: aiReviewConfig.mapPhases.critic,
@@ -1139,32 +1193,28 @@ export default function (pi: ExtensionAPI) {
                 input: JSON.stringify({ proposal: JSON.parse(planJson), scoutDiagnostics }),
                 phase: "map.critic",
                 depth: aiReviewConfig.depth,
+                structuredOutput: true,
+                structuredOutputSchema: REVIEW_MAP_CRITIC_OUTPUT_SCHEMA,
               }),
               onProgress: (progress) => sendWindowMessage({ type: "review-map-progress", progress }),
             });
             if (!canUpdateReviewWindow()) return;
-            reviewMap = result;
-            analysis = {
-              ...analysis,
-              chapters: result.chapters,
-              coverage: {
-                fileCount: result.coverage.fileCount,
-                originalLineCount: result.coverage.originalLineCount,
-                modifiedLineCount: result.coverage.modifiedLineCount,
-                unmappedFileCount: result.coverage.unmappedFileCount,
-                unmappedOriginalLineCount: result.coverage.unmappedOriginalLineCount,
-                unmappedModifiedLineCount: result.coverage.unmappedModifiedLineCount,
-              },
-            };
-            reviewData.map = result;
-            reviewData.analysis = analysis;
-            sessionSnapshot = { ...(sessionSnapshot ?? {}), map: result };
-            queueSessionSave(sessionSnapshot);
-            if (!await flushSessionSave() || !canUpdateReviewWindow()) return;
-            windowController?.updateProtocolContext(rendererProtocolContext(files, dataset.commits, analysis, result));
-            sendWindowMessage({ type: "review-map-result", map: result });
-          })().catch((error) => {
-            if (canUpdateReviewWindow()) ctx.ui.notify(`Semantic review map failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+            await presentCompletedReviewMap(result);
+            if (result.status === "fallback" && canUpdateReviewWindow()) {
+              ctx.ui.notify(`Semantic review map failed: ${result.diagnostics.at(-1) ?? "using the deterministic review plan"}`, "warning");
+            }
+          })().catch(async (error) => {
+            if (!canUpdateReviewWindow()) return;
+            const message = error instanceof Error ? error.message : String(error);
+            ctx.ui.notify(`Semantic review map failed: ${message}`, "warning");
+            const fallback = createFallbackReviewMap(provisionalMap, [message]);
+            try {
+              await presentCompletedReviewMap(fallback);
+            } catch (fallbackError) {
+              lifecycle.callbacks.onControllerError(
+                fallbackError instanceof Error ? fallbackError : new Error(String(fallbackError)),
+              );
+            }
           });
         }
       } catch (error) {

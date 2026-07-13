@@ -11,6 +11,13 @@ export class ReviewMapQualityError extends Error {
   }
 }
 
+export class ReviewMapRepairableQualityError extends ReviewMapQualityError {
+  constructor(message: string, diagnostics: string[] = [message]) {
+    super(message, diagnostics);
+    this.name = "ReviewMapRepairableQualityError";
+  }
+}
+
 export interface CompileReviewMapOptions {
   sourceFingerprint: string;
   strategyVersion: string;
@@ -146,7 +153,7 @@ export function compileReviewMap(options: CompileReviewMapOptions): ReviewMap {
     const unitShare = leftovers.length / Math.max(1, options.units.length);
     const lineShare = supportingWeight / Math.max(1, totalWeight);
     if (unitShare > 0.2 || lineShare > 0.2) {
-      throw new ReviewMapQualityError(`Supporting changes exceed quality thresholds (${Math.round(unitShare * 100)}% of units, ${Math.round(lineShare * 100)}% of changed lines).`);
+      throw new ReviewMapRepairableQualityError(`Supporting changes exceed quality thresholds (${Math.round(unitShare * 100)}% of units, ${Math.round(lineShare * 100)}% of changed lines).`);
     }
   }
   const planChapters = leftovers.length === 0 ? options.plan.chapters : [...options.plan.chapters, supportingChapter(leftovers)];

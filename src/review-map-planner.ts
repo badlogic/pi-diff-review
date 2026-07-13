@@ -1,4 +1,11 @@
+import { Type } from "@earendil-works/pi-ai/compat";
 import type { ReviewChangeUnit, ReviewChangeStory, ReviewChapterPriority, ReviewTestEvidence, ReviewVisit, ReviewVisitRole } from "./types.js";
+import {
+  largestFittingJson,
+  projectReviewMapUnits,
+  REVIEW_MAP_TEXT_LIMITS,
+  truncateReviewMapText,
+} from "./review-map-model-input.js";
 import type { ReviewMapScoutFact } from "./review-map-scout.js";
 import type { ReviewDataset } from "./sources/types.js";
 
@@ -50,8 +57,78 @@ function parseStory(value: unknown): ReviewChangeStory {
   };
 }
 
-const PRIORITIES = new Set<ReviewChapterPriority>(["review-first", "high-attention", "standard", "low-attention", "reference"]);
-const ROLES = new Set<ReviewVisitRole>(["start-here", "contract", "implementation", "caller", "integration", "removed-path", "verification", "reference"]);
+export const REVIEW_MAP_PRIORITIES = [
+  "review-first",
+  "high-attention",
+  "standard",
+  "low-attention",
+  "reference",
+] as const satisfies readonly ReviewChapterPriority[];
+
+export const REVIEW_MAP_VISIT_ROLES = [
+  "start-here",
+  "contract",
+  "implementation",
+  "caller",
+  "integration",
+  "removed-path",
+  "verification",
+  "reference",
+] as const satisfies readonly ReviewVisitRole[];
+
+export const REVIEW_MAP_PLANNER_PROMPT = `You design a human review journey for a pull request. Return one strict JSON object and no prose. Organize by end-to-end behavior, not directories or file types, and order chapters by reviewer dependency. Pair tests with the behavior they verify.
+
+The root shape is {"story": Story, "chapters": Chapter[]}. Story contains intent, behaviorBefore, and behaviorAfter as non-empty strings; primaryFlows as a non-empty array of strings; and removedOrReplacedBehavior as an array of strings.
+
+Every Chapter contains id, title, objective, whyItMatters, priority, and priorityReason as non-empty strings; dependsOn, reviewQuestions, changeFlow, and exitCriteria as arrays of strings; visits as a non-empty Visit array; and testEvidence as a TestEvidence array. reviewQuestions, changeFlow, and exitCriteria must be non-empty. Chapter priority must be one of: ${REVIEW_MAP_PRIORITIES.join(", ")}.
+
+Every Visit contains id, fileId, role, and reason as non-empty strings; changeUnitIds as a non-empty array of strings; and focus as an array of strings. Visit role must be one of: ${REVIEW_MAP_VISIT_ROLES.join(", ")}.
+
+Every TestEvidence contains visitIds, proves, and doesNotProve as arrays of strings. Use [] for an empty array; never use null, a scalar string, or an object where an array is required. Assign each supplied unit exactly once, keep each visit's fileId consistent with its units, and reference no invented unit, file, visit, or chapter IDs.
+
+Be compact without dropping identity or coverage: keep each descriptive string within 240 characters and each descriptive array at most 5 items. Combine units from the same file into one visit when they serve the same behavior, but keep separate visits when distinct behavioral slices require separate review.`;
+
+const plannerText = () => Type.String({ minLength: 1, maxLength: 240 });
+const plannerTexts = (minItems = 0) => Type.Array(plannerText(), { minItems, maxItems: 5 });
+const plannerIds = (minItems = 0) => Type.Array(Type.String({ minLength: 1 }), { minItems, maxItems: 40 });
+
+export const REVIEW_MAP_PLANNER_OUTPUT_SCHEMA = Type.Object({
+  story: Type.Object({
+    intent: plannerText(),
+    behaviorBefore: plannerText(),
+    behaviorAfter: plannerText(),
+    primaryFlows: plannerTexts(1),
+    removedOrReplacedBehavior: plannerTexts(),
+  }),
+  chapters: Type.Array(Type.Object({
+    id: plannerText(),
+    title: plannerText(),
+    objective: plannerText(),
+    whyItMatters: plannerText(),
+    priority: Type.Union(REVIEW_MAP_PRIORITIES.map((priority) => Type.Literal(priority))),
+    priorityReason: plannerText(),
+    dependsOn: plannerIds(),
+    reviewQuestions: plannerTexts(1),
+    changeFlow: plannerTexts(1),
+    visits: Type.Array(Type.Object({
+      id: plannerText(),
+      fileId: plannerText(),
+      role: Type.Union(REVIEW_MAP_VISIT_ROLES.map((role) => Type.Literal(role))),
+      reason: plannerText(),
+      changeUnitIds: plannerIds(1),
+      focus: plannerTexts(),
+    }), { minItems: 1, maxItems: 40 }),
+    testEvidence: Type.Array(Type.Object({
+      visitIds: plannerIds(),
+      proves: plannerTexts(),
+      doesNotProve: plannerTexts(),
+    }), { maxItems: 40 }),
+    exitCriteria: plannerTexts(1),
+  }), { minItems: 1, maxItems: 40 }),
+});
+
+const PRIORITIES = new Set<ReviewChapterPriority>(REVIEW_MAP_PRIORITIES);
+const ROLES = new Set<ReviewVisitRole>(REVIEW_MAP_VISIT_ROLES);
 const GENERIC_TITLE = /^(miscellaneous changes|tests?|service behavior|api surface|all files|changed files)$/i;
 
 export function parseReviewMapPlan(raw: string, units: ReviewChangeUnit[]): ReviewMapPlan {
@@ -124,17 +201,125 @@ export function parseReviewMapPlan(raw: string, units: ReviewChangeUnit[]): Revi
   return { story: parseStory(root.story), chapters };
 }
 
-export function buildReviewMapPlannerInput(dataset: ReviewDataset, units: ReviewChangeUnit[], facts: ReviewMapScoutFact[]): string {
-  return JSON.stringify({
-    source: dataset.source,
-    commits: dataset.commits,
-    units,
-    scoutFacts: facts,
+export interface BuildReviewMapPlannerInputOptions {
+  maxInputChars: number;
+  repairInstructions?: string;
+}
+
+interface PlannerTruncation {
+  omittedTextCharacters: number;
+  omittedItems: number;
+}
+
+function fitRepairInstructions(value: string, maxSerializedChars: number): string {
+  const fitted = largestFittingJson({
+    maxInputChars: maxSerializedChars,
+    maxVariableChars: value.length,
+    build: (textCap) => truncateReviewMapText(value, textCap),
+  });
+  return fitted == null ? "" : JSON.parse(fitted.input) as string;
+}
+
+function plannerPayload(
+  dataset: ReviewDataset,
+  units: ReviewChangeUnit[],
+  facts: ReviewMapScoutFact[],
+  textCap: number,
+  repairInstructions: string | null,
+): unknown {
+  const truncation: PlannerTruncation = { omittedTextCharacters: 0, omittedItems: 0 };
+  const clip = (value: string, hardMax: number): string => {
+    const clipped = truncateReviewMapText(value, Math.min(hardMax, textCap));
+    truncation.omittedTextCharacters += value.length - clipped.length;
+    return clipped;
+  };
+  const clips = (values: string[]): string[] => {
+    const retained = values.slice(0, REVIEW_MAP_TEXT_LIMITS.scoutArrayItems);
+    truncation.omittedItems += values.length - retained.length;
+    return retained.map((value) => clip(value, REVIEW_MAP_TEXT_LIMITS.scoutText));
+  };
+  const source = {
+    kind: dataset.source.kind,
+    label: clip(dataset.source.label, REVIEW_MAP_TEXT_LIMITS.sourceLabel),
+    baseRevision: dataset.source.baseRevision,
+    headRevision: dataset.source.headRevision,
+    ...(dataset.source.github == null ? {} : {
+      github: {
+        owner: dataset.source.github.owner,
+        repo: dataset.source.github.repo,
+        number: dataset.source.github.number,
+        title: clip(dataset.source.github.title, REVIEW_MAP_TEXT_LIMITS.pullRequestTitle),
+        body: clip(dataset.source.github.body, REVIEW_MAP_TEXT_LIMITS.pullRequestBody),
+        author: dataset.source.github.author,
+        baseRefName: dataset.source.github.baseRefName,
+        headRefName: dataset.source.github.headRefName,
+        isDraft: dataset.source.github.isDraft,
+      },
+    }),
+  };
+  const retainedFacts = facts.slice(0, REVIEW_MAP_TEXT_LIMITS.scoutFacts);
+  truncation.omittedItems += facts.length - retainedFacts.length;
+  const scoutFacts = retainedFacts.map((fact) => {
+    const relationships = fact.candidateRelationships.slice(0, REVIEW_MAP_TEXT_LIMITS.scoutRelationships);
+    truncation.omittedItems += fact.candidateRelationships.length - relationships.length;
+    return {
+      unitIds: fact.unitIds,
+      intent: clip(fact.intent, REVIEW_MAP_TEXT_LIMITS.scoutText),
+      changedContracts: clips(fact.changedContracts),
+      callersAndDependencies: clips(fact.callersAndDependencies),
+      removedBehavior: clips(fact.removedBehavior),
+      invariants: clips(fact.invariants),
+      testEvidence: clips(fact.testEvidence),
+      evidenceGaps: clips(fact.evidenceGaps),
+      candidateRelationships: relationships.map((relationship) => ({
+        fromUnitId: relationship.fromUnitId,
+        toUnitId: relationship.toUnitId,
+        reason: clip(relationship.reason, REVIEW_MAP_TEXT_LIMITS.scoutText),
+      })),
+      confidence: fact.confidence,
+      unresolvedQuestions: clips(fact.unresolvedQuestions),
+    };
+  });
+  return {
+    source,
+    commits: dataset.commits.map((commit) => ({
+      sha: commit.sha,
+      shortSha: commit.shortSha,
+      subject: clip(commit.subject, REVIEW_MAP_TEXT_LIMITS.commitSubject),
+    })),
+    units: projectReviewMapUnits(units),
+    scoutFacts,
     instructions: {
       organizeBy: "end-to-end behavior and reviewer dependency order",
       pairTestsWithBehavior: true,
       allowSplitFileVisits: true,
       requireExactUnitAssignment: true,
+      priorities: REVIEW_MAP_PRIORITIES,
+      visitRoles: REVIEW_MAP_VISIT_ROLES,
     },
+    repairInstructions,
+    truncation,
+  };
+}
+
+export function buildReviewMapPlannerInput(
+  dataset: ReviewDataset,
+  units: ReviewChangeUnit[],
+  facts: ReviewMapScoutFact[],
+  options: BuildReviewMapPlannerInputOptions = { maxInputChars: 500_000 },
+): string {
+  const repairReserve = Math.min(4_096, Math.floor(options.maxInputChars * 0.1));
+  const repairInstructions = options.repairInstructions == null
+    ? null
+    : fitRepairInstructions(options.repairInstructions, repairReserve);
+  const requestLimit = repairInstructions == null
+    ? options.maxInputChars - repairReserve
+    : options.maxInputChars;
+  const fitted = largestFittingJson({
+    maxInputChars: requestLimit,
+    maxVariableChars: REVIEW_MAP_TEXT_LIMITS.pullRequestBody,
+    build: (textCap) => plannerPayload(dataset, units, facts, textCap, repairInstructions),
   });
+  if (fitted == null) throw new Error("Planner identity inventory exceeds the configured input budget.");
+  return fitted.input;
 }

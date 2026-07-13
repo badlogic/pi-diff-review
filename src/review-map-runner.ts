@@ -1,5 +1,7 @@
-import { compileReviewMap, ReviewMapQualityError } from "./review-map-compiler.js";
+import { compileReviewMap, ReviewMapRepairableQualityError } from "./review-map-compiler.js";
 import { parseReviewMapPlan } from "./review-map-planner.js";
+import type { ReviewMapPlan } from "./review-map-planner.js";
+import { sanitizeReviewMapDiagnostic } from "./review-map-model-input.js";
 import type { ReviewMapScoutFact, ReviewMapScoutResult } from "./review-map-scout.js";
 import type { ReviewChangeUnit, ReviewMap, ReviewMapProgress } from "./types.js";
 
@@ -25,12 +27,19 @@ function criticDecision(raw: string): { action: "accept" | "repair"; diagnostics
   }
   return {
     action: value.action,
-    diagnostics: value.diagnostics,
+    diagnostics: value.diagnostics.slice(0, 40).map((diagnostic) => sanitizeReviewMapDiagnostic(diagnostic)),
     ...(typeof value.instructions === "string" ? { instructions: value.instructions } : {}),
   };
 }
 
-function fallbackMap(provisionalMap: ReviewMap, diagnostics: string[]): ReviewMap {
+const MAX_PLANNER_CALLS = 3;
+
+interface ValidPlanCandidate {
+  raw: string;
+  plan: ReviewMapPlan;
+}
+
+export function createFallbackReviewMap(provisionalMap: ReviewMap, diagnostics: string[]): ReviewMap {
   return {
     ...provisionalMap,
     status: "fallback",
@@ -46,49 +55,68 @@ export async function runSemanticReviewMap(options: RunSemanticReviewMapOptions)
     diagnostics.push(...scoutResult.diagnostics);
 
     options.onProgress({ phase: "planner", message: "Building the reviewer journey." });
-    let rawPlan = await options.plan(scoutResult.facts);
-    let plan = parseReviewMapPlan(rawPlan, options.units);
+    let plannerCalls = 0;
+    const requestValidPlan = async (
+      repairInstructions?: string,
+      repairStage = "map.planner contract",
+    ): Promise<ValidPlanCandidate> => {
+      let instructions = repairInstructions;
+      let stage = repairStage;
+      while (plannerCalls < MAX_PLANNER_CALLS) {
+        if (plannerCalls > 0) diagnostics.push(`${stage} repair ${plannerCalls}/2`);
+        const raw = await options.plan(scoutResult.facts, instructions);
+        plannerCalls += 1;
+        try {
+          return { raw, plan: parseReviewMapPlan(raw, options.units) };
+        } catch (error) {
+          const reason = sanitizeReviewMapDiagnostic(error);
+          if (plannerCalls >= MAX_PLANNER_CALLS) {
+            throw new Error(`Planner repair budget exhausted: ${reason}`);
+          }
+          stage = "map.planner contract";
+          instructions = `Return a plan that satisfies the exact schema and enum contract. Validation error: ${reason}`;
+        }
+      }
+      throw new Error("Planner repair budget exhausted.");
+    };
+    let candidate = await requestValidPlan();
 
     options.onProgress({ phase: "critic", message: "Challenging map quality and review order." });
-    const criticism = criticDecision(await options.criticize(rawPlan, scoutResult.diagnostics));
-    diagnostics.push(...criticism.diagnostics);
-    let repaired = false;
-    if (criticism.action === "repair") {
-      rawPlan = await options.plan(scoutResult.facts, criticism.instructions);
-      plan = parseReviewMapPlan(rawPlan, options.units);
-      repaired = true;
+    let criticism: ReturnType<typeof criticDecision> | null = null;
+    try {
+      criticism = criticDecision(await options.criticize(candidate.raw, scoutResult.diagnostics));
+      diagnostics.push(...criticism.diagnostics);
+    } catch (error) {
+      diagnostics.push(`map.critic: ${sanitizeReviewMapDiagnostic(error)}`);
+    }
+    if (criticism?.action === "repair") {
+      candidate = await requestValidPlan(criticism.instructions, "map.critic");
     }
 
     options.onProgress({ phase: "compile", message: "Proving exact changed-line coverage." });
-    let map: ReviewMap;
-    try {
-      map = compileReviewMap({
-        sourceFingerprint: options.sourceFingerprint,
-        strategyVersion: options.strategyVersion,
-        plan,
-        units: options.units,
-        status: repaired ? "semantic-repaired" : "semantic",
-      });
-    } catch (error) {
-      if (repaired || !(error instanceof ReviewMapQualityError)) throw error;
-      diagnostics.push(...error.diagnostics);
-      rawPlan = await options.plan(scoutResult.facts, error.diagnostics.join("\n"));
-      plan = parseReviewMapPlan(rawPlan, options.units);
-      map = compileReviewMap({
-        sourceFingerprint: options.sourceFingerprint,
-        strategyVersion: options.strategyVersion,
-        plan,
-        units: options.units,
-        status: "semantic-repaired",
-      });
+    let map: ReviewMap | null = null;
+    while (map == null) {
+      try {
+        map = compileReviewMap({
+          sourceFingerprint: options.sourceFingerprint,
+          strategyVersion: options.strategyVersion,
+          plan: candidate.plan,
+          units: options.units,
+          status: plannerCalls > 1 ? "semantic-repaired" : "semantic",
+        });
+      } catch (error) {
+        if (!(error instanceof ReviewMapRepairableQualityError)) throw error;
+        diagnostics.push(...error.diagnostics.map((diagnostic) => sanitizeReviewMapDiagnostic(diagnostic)));
+        candidate = await requestValidPlan(error.diagnostics.join("\n"), "map.compiler quality");
+      }
     }
     map.diagnostics.push(...diagnostics);
     options.onProgress({ phase: "done", message: "Semantic review plan is ready." });
     return map;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeReviewMapDiagnostic(error);
     diagnostics.push(message);
     options.onProgress({ phase: "failed", message: "Semantic mapping failed; using the deterministic review plan." });
-    return fallbackMap(options.provisionalMap, diagnostics);
+    return createFallbackReviewMap(options.provisionalMap, diagnostics);
   }
 }

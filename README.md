@@ -77,7 +77,7 @@ Use this only after checking GitHub. The prior request may already have succeede
 
 ## PI Review Configuration
 
-The diff opens with a deterministic provisional review plan. Semantic mapping then runs in the background through bounded scouts, a global planner, an adversarial critic, and an exact-coverage compiler. Only a map that owns every changed line exactly once is published to the UI. If semantic mapping fails, the provisional plan remains usable and is labeled as fallback rather than being presented as AI-generated.
+The diff is first organized with a deterministic provisional plan while semantic mapping runs through bounded scouts, a global planner, an adversarial critic, and an exact-coverage compiler. Scout and planner limits are enforced after JSON serialization, and each file patch appears only once in a scout request. Planner contract and map-quality failures share a two-call repair budget before the deterministic fallback is used. The viewer remains hidden until mapping finishes, then opens with either the validated semantic map or a clearly labeled deterministic fallback. Only a map that owns every changed line exactly once is presented as AI-generated.
 
 Review progress is stored per semantic visit. Different changed ranges in one large file may therefore belong to different chapters; the file is complete only after every visit is complete. A matching diff fingerprint and mapping strategy restore the cached map without repeating model work. A changed PR head invalidates generated maps and findings while retaining only human state that can be reconciled safely.
 

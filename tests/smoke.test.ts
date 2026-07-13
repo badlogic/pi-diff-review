@@ -92,6 +92,34 @@ test("renderer completes its boot handshake before starting the review app", () 
   assert.equal(bootHandshake < appStartup, true);
 });
 
+test("terminal waiting copy does not claim the gated review window is already open", () => {
+  const extension = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+
+  assert.equal(extension.includes("The native review window is open."), false);
+  assert.equal(extension.includes("The review window will appear when the review map is ready."), true);
+});
+
+test("semantic map startup uses bounded v2 model contracts", () => {
+  const extension = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  const scout = readFileSync(new URL("../src/review-map-scout.ts", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+
+  assert.equal(extension.includes('const REVIEW_MAP_STRATEGY_VERSION = "semantic-map-v2"'), true);
+  assert.equal(extension.includes("const REVIEW_MAP_PLANNER_PROMPT ="), false);
+  assert.equal(extension.includes("const REVIEW_MAP_SCOUT_PROMPT ="), false);
+  assert.equal(extension.includes("JSON.parse(buildReviewMapPlannerInput"), false);
+  assert.equal(extension.includes("maxInputChars: aiReviewConfig.maxChapterPatchChars"), true);
+  assert.equal(extension.match(/structuredOutput: true/g)?.length, 3);
+  assert.equal(extension.match(/structuredOutputSchema:/g)?.length, 3);
+  assert.equal(extension.includes("REVIEW_MAP_SCOUT_OUTPUT_SCHEMA"), true);
+  assert.equal(extension.includes("REVIEW_MAP_PLANNER_OUTPUT_SCHEMA"), true);
+  assert.equal(extension.includes("REVIEW_MAP_CRITIC_OUTPUT_SCHEMA"), true);
+  assert.equal(extension.includes('restoredMap.strategyVersion === "semantic-map-v1"'), false);
+  assert.equal(scout.includes("export const REVIEW_MAP_SCOUT_PROMPT"), true);
+  assert.match(readme, /after JSON serialization/i);
+  assert.match(readme, /two-call repair budget/i);
+});
+
 test("finding cards focus and pulse the selected inline finding", () => {
   const appJs = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
   const css = readFileSync(new URL("../web/review.css", import.meta.url), "utf8");
@@ -182,8 +210,12 @@ test("review workspace is consolidated around one sidebar and checkout drawer", 
   assert.equal(css.includes("review-scan-pulse"), false);
   assert.equal(appJs.includes("sidebar-scanning-icon"), true);
   assert.equal(html.includes("chapter-brief-container"), true);
+  assert.equal(html.includes('id="ai-review-result-container"'), true);
+  assert.equal(html.includes('aria-label="Open overall AI review"'), true);
   assert.equal(html.includes('id="session-notice"'), true);
   assert.equal(html.includes("chapter-brief-view"), true);
+  assert.equal(appJs.includes("mountAiReviewResult"), true);
+  assert.equal(appJs.includes('activeCanvas === "ai-review"'), true);
   assert.equal(appJs.includes("openCheckoutDrawer"), true);
   assert.equal(appJs.includes("closeCheckoutDrawer"), true);
   assert.equal(appJs.includes("renderInsightPanel();"), false);

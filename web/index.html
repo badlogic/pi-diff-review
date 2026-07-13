@@ -21,7 +21,7 @@
       </div>
     </div>
     <div class="flex min-w-0 items-center gap-2">
-      <div id="summary" class="hidden min-w-0 max-w-[34rem] text-[11px] text-review-muted xl:block"></div>
+      <button id="summary" type="button" aria-label="Open overall AI review" title="Open overall AI review" class="hidden min-w-0 max-w-[34rem] cursor-pointer rounded px-1 py-0.5 text-left text-[11px] text-review-muted hover:bg-[#161b22] hover:text-review-text xl:block"></button>
       <button id="github-thread-count" type="button" title="Open GitHub review threads" class="hidden cursor-pointer rounded px-2 py-1 text-[11px] text-review-muted hover:bg-[#161b22] hover:text-review-text"></button>
       <button id="submit-button" class="cursor-pointer rounded-md border border-[#1f6feb]/40 bg-[#1f6feb] px-4 py-1.5 text-xs font-semibold text-white shadow-[0_0_0_1px_rgba(255,255,255,0.04)] hover:bg-[#388bfd] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-[#1f6feb]">Submit review</button>
     </div>
@@ -64,6 +64,7 @@
     <div id="file-comments-container" class="hidden border-b border-review-border bg-[#0d1117] px-4 py-0"></div>
     <div id="editor-container" class="min-h-0 min-w-0 flex-1"></div>
     <div id="chapter-brief-container" class="chapter-brief-view scrollbar-thin hidden min-h-0 min-w-0 flex-1 overflow-auto bg-[#0d1117]"></div>
+    <div id="ai-review-result-container" class="ai-review-result-view scrollbar-thin hidden min-h-0 min-w-0 flex-1 overflow-auto bg-[#0d1117]"></div>
     </main>
     <aside id="insight-panel" tabindex="-1" class="hidden min-h-0 shrink-0 flex-col border-l border-review-border bg-[#0d1117] review-checkout-drawer">
       <div class="border-b border-review-border px-4 py-2">

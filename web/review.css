@@ -123,7 +123,8 @@ html, body {
     height: 100% !important;
   }
 
-  .chapter-brief-view {
+  .chapter-brief-view,
+  .ai-review-result-view {
     animation: chapter-brief-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
@@ -420,6 +421,7 @@ html, body {
     .ai-pulse-dot,
     .sidebar-scanning-icon,
     .chapter-brief-view,
+    .ai-review-result-view,
     .ai-finding-zone.is-pulsing {
       animation: none;
     }

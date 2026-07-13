@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compileReviewMap, ReviewMapQualityError } from "../src/review-map-compiler.js";
+import { compileReviewMap, ReviewMapQualityError, ReviewMapRepairableQualityError } from "../src/review-map-compiler.js";
 import type { ReviewMapPlan } from "../src/review-map-planner.js";
 import type { ReviewChangeUnit } from "../src/types.js";
 
@@ -50,5 +50,7 @@ test("compiler requests repair when supporting changes exceed quality thresholds
   const units = [unit("one", "src/runtime.py", 1, 2), unit("two", "src/runtime.py", 10, 40)];
   assert.throws(() => compileReviewMap({
     sourceFingerprint: "sha256:a", strategyVersion: "semantic-map-v1", plan: plan(["one"]), units, status: "semantic",
-  }), (error) => error instanceof ReviewMapQualityError && /supporting/i.test(error.message));
+  }), (error) => error instanceof ReviewMapRepairableQualityError
+    && error instanceof ReviewMapQualityError
+    && /supporting/i.test(error.message));
 });

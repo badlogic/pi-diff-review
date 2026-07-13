@@ -41,6 +41,7 @@ export interface ReviewWindowControllerOptions {
   title: string;
   bootstrap: ReviewWindowData;
   protocol: Omit<RendererProtocolContext, "sessionId" | "capability">;
+  presentationReady?: boolean;
   bootTimeoutMs?: number;
   timers?: ReviewWindowTimers;
   onMessage: (message: Exclude<DecodedRendererMessage, { type: "renderer-booted" }>) => void;
@@ -76,6 +77,8 @@ export class ReviewWindowController {
   #settled = false;
   #rendererReady = false;
   #rendererBooted = false;
+  #presentationReady: boolean;
+  #presented = false;
   #closeRequested = false;
   #preBootMessages: RendererCommand[] = [];
   #preBootHostMessages: unknown[] = [];
@@ -93,6 +96,7 @@ export class ReviewWindowController {
     this.#onMessage = options.onMessage;
     this.#onClosed = options.onClosed;
     this.#onError = options.onError;
+    this.#presentationReady = options.presentationReady ?? true;
     this.#bootTimeoutMs = options.bootTimeoutMs ?? 15_000;
     this.#timers = options.timers ?? defaultTimers;
   }
@@ -117,6 +121,12 @@ export class ReviewWindowController {
     this.#preBootHostMessages = [];
     this.#protocol = null;
     this.#settled = true;
+  }
+
+  releasePresentation(): void {
+    if (this.#settled) return;
+    this.#presentationReady = true;
+    this.#presentIfReady();
   }
 
   sendHostMessage(message: unknown): boolean {
@@ -199,12 +209,6 @@ export class ReviewWindowController {
       if (this.#rendererBooted) return;
       this.#rendererBooted = true;
       this.#clearBootWatchdog();
-      try {
-        this.#window.show({ title: this.#title });
-      } catch (error) {
-        this.#handleError(asError(error));
-        return;
-      }
       const queuedMessages = this.#preBootMessages.splice(0);
       for (const queuedMessage of queuedMessages) {
         if (this.#settled || this.#protocol == null) break;
@@ -215,6 +219,7 @@ export class ReviewWindowController {
         if (this.#settled || this.#protocol == null) break;
         this.sendHostMessage(queuedMessage);
       }
+      this.#presentIfReady();
       return;
     }
     if (!this.#rendererBooted) {
@@ -268,6 +273,16 @@ export class ReviewWindowController {
     try {
       this.#window.close();
     } catch {}
+  }
+
+  #presentIfReady(): void {
+    if (this.#settled || this.#presented || !this.#rendererBooted || !this.#presentationReady) return;
+    try {
+      this.#window.show({ title: this.#title });
+      this.#presented = true;
+    } catch (error) {
+      this.#handleError(asError(error));
+    }
   }
 
   #armBootWatchdog(stage: "renderer-ready" | "renderer-booted"): void {

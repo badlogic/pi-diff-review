@@ -16,12 +16,17 @@ import jsonWorkerSource from "review-worker:json";
 import cssWorkerSource from "review-worker:css";
 import htmlWorkerSource from "review-worker:html";
 import typescriptWorkerSource from "review-worker:typescript";
+import { buildAiReviewResultState } from "./ai-review-result-state.js";
 import { createCommentEditorSavePolicy } from "./comment-editor-save-policy.js";
 import { createCommentEditBuffer } from "./comment-edit-buffer.js";
 import { replaceDiffEditorModels } from "./model-lifecycle.js";
 import { applyAuthoritativePublishedCommentState } from "./publish-comment-state.js";
 import { expandDisclosure, isDisclosureExpanded, toggleDisclosure } from "./review-disclosure-state.js";
-import { isFileCanvasActive } from "./review-navigation-state.js";
+import {
+  firstUnreviewedVisitInChapter,
+  isFileCanvasActive,
+  nextGuidedReviewDestination,
+} from "./review-navigation-state.js";
 import { isFileReviewComplete, nextReviewVisit, reconcileReviewMapState } from "./review-visit-state.js";
 import { createSessionSaveScheduler } from "./session-save-scheduler.js";
 import { renderSafeMarkdown, safeExternalUrl } from "./safe-markdown.js";
@@ -249,6 +254,7 @@ const state = {
   activeDiffSide: "modified",
   activeDiffLine: null,
   activeCanvas: "file",
+  pendingCanvasFocus: null,
   pendingHunkFocus: null,
   pendingFindingFocus: null,
   editingCommentIds: new Set(),
@@ -303,6 +309,7 @@ const modeHintEl = document.getElementById("mode-hint");
 const fileCommentsContainer = document.getElementById("file-comments-container");
 const editorContainerEl = document.getElementById("editor-container");
 const chapterBriefContainerEl = document.getElementById("chapter-brief-container");
+const aiReviewResultContainerEl = document.getElementById("ai-review-result-container");
 const insightPanelEl = document.getElementById("insight-panel");
 const insightPanelTitleEl = document.getElementById("insight-panel-title");
 const insightContentEl = document.getElementById("insight-content");
@@ -768,7 +775,7 @@ function setSummary(summary, counts = null, progress = null) {
   const percent = total > 0 ? Math.round((reviewed / total) * 100) : 0;
   const staged = Math.max(0, Number(progress.staged || 0));
   summaryEl.innerHTML = `
-    <div class="flex min-w-0 items-center gap-2">
+    <span class="flex min-w-0 items-center gap-2">
       ${stats ? `<span class="shrink-0">${stats}</span>` : ""}
       <span class="min-w-0 truncate">${escapeHtml(summary)}</span>
       <span class="shrink-0 rounded bg-[#161b22] px-1.5 py-0.5 text-[10px] font-medium text-review-muted">${reviewed}/${total} reviewed</span>
@@ -776,7 +783,7 @@ function setSummary(summary, counts = null, progress = null) {
       <span class="h-1 w-20 shrink-0 overflow-hidden rounded-full bg-[#30363d]" title="${reviewed}/${total} files reviewed">
         <span class="block h-full rounded-full bg-[#58a6ff]" style="width: ${percent}%"></span>
       </span>
-    </div>
+    </span>
   `;
 }
 
@@ -1650,7 +1657,41 @@ function openChapterBrief(chapterId) {
   state.activeCanvas = "chapter";
   state.activeSidebarTab = "review-map";
   state.activeInsight = { type: "chapter", id: chapter.id };
+  state.pendingCanvasFocus = "chapter";
   saveCurrentScrollPosition();
+  renderAll({ restoreFileScroll: false });
+  return true;
+}
+
+function getReviewVisit(visitId) {
+  for (const chapter of getReviewChapters()) {
+    const visit = (chapter.visits || []).find((item) => item.id === visitId);
+    if (visit) return visit;
+  }
+  return null;
+}
+
+function openReviewVisit(visitId) {
+  const visit = getReviewVisit(visitId);
+  if (!visit || !getFileById(visit.fileId)) return false;
+  state.activeVisitId = visit.id;
+  openFile(visit.fileId);
+  requestAnimationFrame(focusDiffPane);
+  return true;
+}
+
+function applyGuidedReviewDestination(destination) {
+  if (destination.kind === "visit") return openReviewVisit(destination.visitId);
+  if (destination.kind === "chapter") return openChapterBrief(destination.chapterId);
+  if (destination.kind === "ai-review") return openAiReviewResult();
+  return false;
+}
+
+function openAiReviewResult() {
+  saveCurrentScrollPosition();
+  state.activeCanvas = "ai-review";
+  state.activeInsight = { type: "default", id: null };
+  state.pendingCanvasFocus = "ai-review";
   renderAll({ restoreFileScroll: false });
   return true;
 }
@@ -1680,15 +1721,7 @@ function openChapterByIndex(index) {
   const boundedIndex = Math.max(0, Math.min(chapters.length - 1, index));
   const chapter = chapters[boundedIndex];
   if (!chapter) return false;
-  state.activeSidebarTab = "review-map";
-  state.activeInsight = { type: "chapter", id: chapter.id };
-  const fileId = firstExistingChapterFileId(chapter);
-  if (fileId) {
-    openFileWithPendingHunk(fileId, 1);
-  } else {
-    renderAll({ restoreFileScroll: false });
-  }
-  return true;
+  return openChapterBrief(chapter.id);
 }
 
 function moveChapter(direction) {
@@ -2286,6 +2319,11 @@ function updateAiReviewButton() {
   const running = state.aiReview.status === "running";
   document.querySelectorAll("[data-action='run-ai-review']").forEach((button) => {
     button.disabled = running;
+    if (button.hasAttribute("data-ai-review-surface-action")) {
+      button.textContent = running ? "AI review running" : button.dataset.idleLabel || "Refresh AI analysis";
+      button.classList.toggle("opacity-70", running);
+      return;
+    }
     button.textContent = running ? "..." : "Refresh";
     button.title = "Refresh AI analysis";
     button.className = running
@@ -2301,7 +2339,7 @@ function toolbarButtonClass(active = false) {
 }
 
 function updateToggleButtons() {
-  if (state.activeCanvas === "chapter") {
+  if (state.activeCanvas !== "file") {
     toggleWrapButton.style.display = "none";
     toggleUnchangedButton.style.display = "none";
     fileCommentButton.style.display = "none";
@@ -2361,11 +2399,6 @@ function openFileFromAnalysis(fileId) {
   selectVisitForFile(file.id);
   renderAll({ restoreFileScroll: true });
   ensureFileLoaded(file.id, state.currentScope);
-}
-
-function firstExistingChapterFileId(chapter) {
-  const files = getChapterDisplayFiles(chapter);
-  return files.find((file) => !isFileReviewed(file.id))?.id ?? files[0]?.id ?? null;
 }
 
 function firstDraftableFindingLocation(finding) {
@@ -3459,6 +3492,116 @@ function getMountedContents(file, scope = state.currentScope) {
   return getRequestState(file.id, scope).contents || getPlaceholderContents(file, scope);
 }
 
+function currentAiReviewResult() {
+  return buildAiReviewResultState({
+    aiReview: state.aiReview,
+    aiReviewCompleted: state.aiReviewCompleted,
+    analysis: reviewData.analysis,
+  });
+}
+
+function aiReviewStatusClass(lifecycle) {
+  if (lifecycle === "complete") return "border-[#238636]/50 bg-[#238636]/15 text-[#3fb950]";
+  if (lifecycle === "failed") return "border-[#f85149]/40 bg-[#f85149]/10 text-[#ff7b72]";
+  return "border-[#8957e5]/40 bg-[#8957e5]/10 text-[#d2a8ff]";
+}
+
+function aiReviewRunLabel(lifecycle) {
+  if (lifecycle === "failed") return "Retry AI review";
+  if (lifecycle === "queued") return "Run AI review";
+  return "Refresh AI analysis";
+}
+
+function aiReviewProgressHtml(result) {
+  if (result.lifecycle !== "running") return "";
+  return `<span class="inline-flex items-center gap-1" aria-label="AI review running"><span class="ai-pulse-dot"></span><span class="ai-pulse-dot"></span><span class="ai-pulse-dot"></span></span>`;
+}
+
+function aiReviewListHtml(items, emptyMessage) {
+  if (items.length === 0) return `<p class="text-sm text-review-muted">${escapeHtml(emptyMessage)}</p>`;
+  return `<ul class="space-y-2 text-sm leading-6 text-review-text">${items.map((item) => `<li class="flex gap-2"><span class="text-[#d2a8ff]">•</span><span>${escapeHtml(item)}</span></li>`).join("")}</ul>`;
+}
+
+function overallAiReviewCardHtml() {
+  const result = currentAiReviewResult();
+  const complete = result.lifecycle === "complete";
+  return `
+    <section class="mb-4 rounded-lg border border-[#8957e5]/35 bg-[rgba(137,87,229,0.06)] p-4" aria-labelledby="overall-ai-review-card-title">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div id="overall-ai-review-card-title" class="text-[11px] font-semibold uppercase tracking-wider text-[#d2a8ff]">Overall AI review</div>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <span class="rounded border px-2 py-1 text-xs font-semibold ${aiReviewStatusClass(result.lifecycle)}">${escapeHtml(result.statusLabel)}</span>
+            ${aiReviewProgressHtml(result)}
+            ${complete ? `<span class="text-xs text-review-muted">${result.findingCount} validated finding${result.findingCount === 1 ? "" : "s"} · ${result.reviewedAreaCount} reviewed area${result.reviewedAreaCount === 1 ? "" : "s"} · ${escapeHtml(result.verdictLabel)}</span>` : ""}
+          </div>
+          <p class="mt-3 text-sm leading-6 text-review-text">${escapeHtml(complete ? result.summary || "AI review completed without an overall summary." : result.message)}</p>
+        </div>
+        <div class="flex shrink-0 flex-wrap items-center gap-2">
+          <button type="button" data-action="open-ai-review-result" class="cursor-pointer rounded-md border border-review-border bg-[#161b22] px-3 py-1.5 text-xs font-semibold text-review-text hover:bg-[#21262d]">View full AI review</button>
+          ${result.lifecycle === "running" ? "" : `<button type="button" data-action="run-ai-review" data-ai-review-surface-action data-idle-label="${escapeHtml(aiReviewRunLabel(result.lifecycle))}" class="cursor-pointer rounded-md border border-[#8957e5]/40 bg-[#8957e5]/10 px-3 py-1.5 text-xs font-semibold text-[#d2a8ff] hover:bg-[#8957e5]/20">${escapeHtml(aiReviewRunLabel(result.lifecycle))}</button>`}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function overallAiReviewResultHtml() {
+  const result = currentAiReviewResult();
+  const complete = result.lifecycle === "complete";
+  return `
+    <div class="mx-auto w-full max-w-5xl px-8 py-8">
+      <div class="border-b border-review-border pb-6">
+        <span class="inline-flex rounded border px-2 py-1 text-xs font-semibold ${aiReviewStatusClass(result.lifecycle)}">${escapeHtml(result.statusLabel)}</span>
+        <h1 data-canvas-heading tabindex="-1" class="mt-3 text-2xl font-semibold text-white outline-none">Overall AI review</h1>
+        <p class="mt-3 max-w-3xl text-sm leading-6 text-review-muted">${escapeHtml(complete ? result.summary || "AI review completed without an overall summary." : result.message)}</p>
+      </div>
+
+      <div class="mt-6 grid gap-3 sm:grid-cols-3">
+        <div class="rounded-lg border border-review-border bg-[#010409] p-4">
+          <div class="text-xl font-semibold text-white">${result.findingCount}</div>
+          <div class="mt-1 text-[11px] uppercase tracking-wider text-review-muted">Validated findings</div>
+        </div>
+        <div class="rounded-lg border border-review-border bg-[#010409] p-4">
+          <div class="text-xl font-semibold text-white">${complete ? result.reviewedAreaCount : "—"}</div>
+          <div class="mt-1 text-[11px] uppercase tracking-wider text-review-muted">Reviewed areas</div>
+        </div>
+        <div class="rounded-lg border border-review-border bg-[#010409] p-4">
+          <div class="text-xl font-semibold text-white">${escapeHtml(complete ? result.verdictLabel : "Pending")}</div>
+          <div class="mt-1 text-[11px] uppercase tracking-wider text-review-muted">Suggested verdict</div>
+        </div>
+      </div>
+
+      ${complete ? `
+        <section class="mt-4 rounded-lg border border-review-border bg-[#010409] p-5">
+          <h2 class="text-sm font-semibold text-white">AI recommendation</h2>
+          <div class="review-context-markdown mt-3">${result.body ? renderSafeMarkdown(result.body) : `<p>No detailed recommendation was provided.</p>`}</div>
+        </section>
+        <div class="mt-4 grid gap-4 lg:grid-cols-2">
+          <section class="rounded-lg border border-review-border bg-[#010409] p-5">
+            <h2 class="mb-3 text-sm font-semibold text-white">Unresolved findings</h2>
+            ${aiReviewListHtml(result.unresolvedFindings, "No unresolved AI findings.")}
+          </section>
+          <section class="rounded-lg border border-review-border bg-[#010409] p-5">
+            <h2 class="mb-3 text-sm font-semibold text-white">Accepted risks</h2>
+            ${aiReviewListHtml(result.acceptedRisks, "No accepted risks were recorded.")}
+          </section>
+        </div>
+      ` : `
+        <section class="mt-4 rounded-lg border border-review-border bg-[#010409] p-5" role="status" aria-live="polite">
+          <div class="flex items-center gap-2"><h2 class="text-sm font-semibold text-white">${escapeHtml(result.statusLabel)}</h2>${aiReviewProgressHtml(result)}</div>
+          <p class="mt-2 text-sm leading-6 text-review-muted">${escapeHtml(result.message)}</p>
+        </section>
+      `}
+
+      <div class="mt-6 flex flex-wrap justify-end gap-2 border-t border-review-border pt-5">
+        ${result.lifecycle === "running" ? "" : `<button type="button" data-action="run-ai-review" data-ai-review-surface-action data-idle-label="${escapeHtml(aiReviewRunLabel(result.lifecycle))}" class="cursor-pointer rounded-md border border-review-border bg-[#161b22] px-4 py-2 text-sm font-semibold text-review-text hover:bg-[#21262d]">${escapeHtml(aiReviewRunLabel(result.lifecycle))}</button>`}
+        <button type="button" data-action="submit-review" class="cursor-pointer rounded-md border border-[#1f6feb]/40 bg-[#1f6feb] px-4 py-2 text-sm font-semibold text-white hover:bg-[#388bfd]">Submit review</button>
+      </div>
+    </div>
+  `;
+}
+
 function chapterBriefHtml(chapter) {
   const files = getChapterDisplayFiles(chapter);
   const progress = chapterReviewProgress(chapter);
@@ -3466,7 +3609,13 @@ function chapterBriefHtml(chapter) {
   const findings = chapterFindings(chapter).filter((finding) => (state.findingStatuses[finding.id] || "new") === "new");
   const visits = chapter.visits || [];
   const evidence = chapter.testEvidence || [];
-  const firstFileId = firstExistingChapterFileId(chapter);
+  const firstUnreviewedVisit = firstUnreviewedVisitInChapter(chapter, state.reviewedVisits);
+  const firstUnreviewedFile = firstUnreviewedVisit ? getFileById(firstUnreviewedVisit.fileId) : null;
+  const firstUnreviewedLegacyFile = visits.length === 0
+    ? files.find((file) => !isFileReviewed(file.id)) || null
+    : null;
+  const chapterActionFile = firstUnreviewedFile || firstUnreviewedLegacyFile;
+  const chapterActionLabel = progress.reviewed > 0 ? "Continue review" : "Start review";
   const reviewedLabel = progress.total > 0 ? `${progress.reviewed}/${progress.total} reviewed` : "No files";
 
   return `
@@ -3478,11 +3627,13 @@ function chapterBriefHtml(chapter) {
             <span class="${reviewStatusBadgeClass(progress.total > 0 && progress.reviewed >= progress.total)}">${escapeHtml(reviewedLabel)}</span>
             ${diffstatHtml(counts, { compact: true })}
           </div>
-          <h1 class="max-w-3xl text-2xl font-semibold leading-tight text-white">${escapeHtml(chapterDisplayTitle(chapter))}</h1>
+          <h1 data-canvas-heading tabindex="-1" class="max-w-3xl text-2xl font-semibold leading-tight text-white outline-none">${escapeHtml(chapterDisplayTitle(chapter))}</h1>
           <p class="mt-3 max-w-3xl text-sm leading-6 text-review-muted">${escapeHtml(chapter.summary || "Review the changed files in this area before marking it complete.")}</p>
         </div>
-        ${firstFileId ? `<button type="button" data-open-chapter-file="${escapeHtml(firstFileId)}" class="cursor-pointer rounded-md border border-[#1f6feb]/40 bg-[#1f6feb] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#388bfd]">Start review</button>` : ""}
+        ${chapterActionFile ? `<button type="button" data-open-chapter-file="${escapeHtml(chapterActionFile.id)}"${firstUnreviewedVisit ? ` data-review-visit-id="${escapeHtml(firstUnreviewedVisit.id)}"` : ""} class="cursor-pointer rounded-md border border-[#1f6feb]/40 bg-[#1f6feb] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#388bfd]">${escapeHtml(chapterActionLabel)}</button>` : `<span class="rounded-md border border-[#238636]/40 bg-[#238636]/10 px-3 py-1.5 text-xs font-semibold text-[#3fb950]">Chapter complete</span>`}
       </div>
+
+      ${overallAiReviewCardHtml()}
 
       <div class="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
         <section class="rounded-lg border border-review-border bg-[#010409] p-4">
@@ -3567,8 +3718,19 @@ function chapterBriefHtml(chapter) {
   `;
 }
 
-function mountChapterBrief(chapter) {
-  if (!chapter) return;
+function bindAiReviewSurfaceActions(container) {
+  container.querySelectorAll('[data-action="open-ai-review-result"]').forEach((button) => {
+    button.addEventListener("click", openAiReviewResult);
+  });
+  container.querySelectorAll('[data-action="run-ai-review"]').forEach((button) => {
+    button.addEventListener("click", () => runAiReviewFromUi({ force: true }));
+  });
+  container.querySelectorAll('[data-action="submit-review"]').forEach((button) => {
+    button.addEventListener("click", () => submitReview());
+  });
+}
+
+function clearFileCanvasForOverview() {
   clearViewZones();
   if (diffEditor) {
     originalDecorations = diffEditor.getOriginalEditor().deltaDecorations(originalDecorations, []);
@@ -3577,8 +3739,14 @@ function mountChapterBrief(chapter) {
     modifiedKeyboardDecorations = diffEditor.getModifiedEditor().deltaDecorations(modifiedKeyboardDecorations, []);
   }
   editorContainerEl.classList.add("hidden");
-  chapterBriefContainerEl.classList.remove("hidden");
   fileCommentsContainer.className = "hidden border-b border-review-border bg-[#0d1117] px-4 py-0";
+}
+
+function mountChapterBrief(chapter) {
+  if (!chapter) return;
+  clearFileCanvasForOverview();
+  aiReviewResultContainerEl.classList.add("hidden");
+  chapterBriefContainerEl.classList.remove("hidden");
   currentFileLabelEl.innerHTML = `<span class="truncate">${escapeHtml(chapterDisplayTitle(chapter))}</span>`;
   modeHintEl.textContent = chapter.summary || "Review area";
   chapterBriefContainerEl.innerHTML = chapterBriefHtml(chapter);
@@ -3595,7 +3763,27 @@ function mountChapterBrief(chapter) {
       if (finding) openFirstFindingLocation(finding);
     });
   });
+  bindAiReviewSurfaceActions(chapterBriefContainerEl);
   updateToggleButtons();
+  if (state.pendingCanvasFocus === "chapter") {
+    state.pendingCanvasFocus = null;
+    requestAnimationFrame(() => chapterBriefContainerEl.querySelector("[data-canvas-heading]")?.focus());
+  }
+}
+
+function mountAiReviewResult() {
+  clearFileCanvasForOverview();
+  chapterBriefContainerEl.classList.add("hidden");
+  aiReviewResultContainerEl.classList.remove("hidden");
+  currentFileLabelEl.textContent = "Overall AI review";
+  modeHintEl.textContent = currentAiReviewResult().statusLabel;
+  aiReviewResultContainerEl.innerHTML = overallAiReviewResultHtml();
+  bindAiReviewSurfaceActions(aiReviewResultContainerEl);
+  updateToggleButtons();
+  if (state.pendingCanvasFocus === "ai-review") {
+    state.pendingCanvasFocus = null;
+    requestAnimationFrame(() => aiReviewResultContainerEl.querySelector("[data-canvas-heading]")?.focus());
+  }
 }
 
 function mountFile(options = {}) {
@@ -3603,6 +3791,7 @@ function mountFile(options = {}) {
   const file = activeFile();
   state.activeCanvas = "file";
   chapterBriefContainerEl.classList.add("hidden");
+  aiReviewResultContainerEl.classList.add("hidden");
   editorContainerEl.classList.remove("hidden");
   if (!file) {
     currentFileLabelEl.textContent = "No file selected";
@@ -3701,6 +3890,10 @@ function updateCommentsUI() {
 function renderAll(options = {}) {
   renderTree();
   submitButton.disabled = false;
+  if (state.activeCanvas === "ai-review") {
+    mountAiReviewResult();
+    return;
+  }
   if (state.activeCanvas === "chapter" && state.activeInsight.type === "chapter") {
     const chapter = getReviewChapter(state.activeInsight.id);
     if (chapter) {
@@ -3717,6 +3910,18 @@ function renderAll(options = {}) {
     });
   } else {
     renderFileComments();
+  }
+}
+
+function refreshVisibleAiReviewSurface() {
+  renderTree();
+  if (state.activeCanvas === "ai-review") {
+    mountAiReviewResult();
+    return;
+  }
+  if (state.activeCanvas === "chapter" && state.activeInsight.type === "chapter") {
+    const chapter = getReviewChapter(state.activeInsight.id);
+    if (chapter) mountChapterBrief(chapter);
   }
 }
 
@@ -3891,7 +4096,7 @@ window.__reviewReceive = function (message) {
       progress: message.progress,
       config: message.progress?.config || state.aiReview.config,
     };
-    renderTree();
+    refreshVisibleAiReviewSurface();
     return;
   }
 
@@ -3905,7 +4110,7 @@ window.__reviewReceive = function (message) {
       progress: message.progress,
       config: message.progress?.config || state.aiReview.config,
     };
-    renderTree();
+    refreshVisibleAiReviewSurface();
     syncViewZones();
     updateDecorations();
     renderFileComments();
@@ -3937,7 +4142,7 @@ window.__reviewReceive = function (message) {
       progress: message.progress || state.aiReview.progress,
       config: message.progress?.config || state.aiReview.config,
     };
-    renderTree();
+    refreshVisibleAiReviewSurface();
     return;
   }
 
@@ -4094,7 +4299,7 @@ function runAiReviewFromUi(options = {}) {
       status: "failed",
       message: "AI review is only available inside the review app.",
     };
-    renderTree();
+    refreshVisibleAiReviewSurface();
     return;
   }
   const requestId = `ai-review:${Date.now()}:${Math.random().toString(16).slice(2)}`;
@@ -4118,7 +4323,7 @@ function runAiReviewFromUi(options = {}) {
       })),
     },
   };
-  renderTree();
+  refreshVisibleAiReviewSurface();
   sendRendererMessage({ type: "run-ai-review", requestId });
 }
 
@@ -4187,12 +4392,12 @@ function toggleCurrentFileReviewed() {
     const chapter = getReviewChapters().find((item) => (item.visits || []).some((visit) => visit.id === activeVisit.id));
     if (chapter) state.reviewedChapters[chapter.id] = isChapterReviewed(chapter);
     if (state.reviewedVisits[activeVisit.id] === true) {
-      const next = nextReviewVisit(reviewData.map, state.reviewedVisits, activeVisit.id, 1);
-      if (next && next.id !== activeVisit.id) {
-        state.activeVisitId = next.id;
-        openFile(next.fileId);
-        return;
-      }
+      const destination = nextGuidedReviewDestination(
+        getReviewChapters(),
+        state.reviewedVisits,
+        activeVisit.id,
+      );
+      if (applyGuidedReviewDestination(destination)) return;
     }
     renderTree();
     scheduleSessionSave();
@@ -4576,6 +4781,8 @@ document.addEventListener("keydown", (event) => {
 autosaveStatusButton?.addEventListener("click", () => {
   if (autosaveStatusButton.dataset.status === "failed") saveSessionNow();
 });
+
+summaryEl.addEventListener("click", openAiReviewResult);
 
 window.addEventListener("beforeunload", () => {
   syncCommentBodiesFromDOM();
