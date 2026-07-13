@@ -59,6 +59,39 @@ test("extracts a stable replacement unit with exact changed-line ownership", () 
   assert.notEqual(changed[0]?.id, first[0]?.id);
 });
 
+test("does not create a range-less unit for an empty added file", () => {
+  const emptyFile: ReviewFile = {
+    ...file(),
+    id: "src/empty.ts",
+    path: "src/empty.ts",
+    worktreeStatus: "added",
+    gitDiff: {
+      status: "added",
+      oldPath: null,
+      newPath: "src/empty.ts",
+      displayPath: "src/empty.ts",
+      hasOriginal: false,
+      hasModified: true,
+      addedLines: 0,
+      deletedLines: 0,
+      commentableOriginalLines: [],
+      commentableModifiedLines: [],
+    },
+  };
+  const emptyPatch = [
+    "diff --git a/src/empty.ts b/src/empty.ts",
+    "new file mode 100644",
+    "index 00000000..e69de29b",
+  ].join("\n");
+
+  assert.deepEqual(extractReviewChangeUnits({
+    sourceFingerprint: "sha256:a",
+    file: emptyFile,
+    patch: emptyPatch,
+    commitIds: ["c1"],
+  }), []);
+});
+
 test("validates child subdivisions only when they exactly preserve parent coverage", () => {
   const parent = extractReviewChangeUnits({ sourceFingerprint: "sha256:a", file: file(), patch, commitIds: [] })[0]!;
   const child = (id: string, startLine: number, endLine: number): ReviewChangeUnit => ({

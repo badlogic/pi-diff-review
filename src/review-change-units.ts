@@ -44,10 +44,11 @@ export function extractReviewChangeUnits(options: ExtractReviewChangeUnitsOption
           ...toRanges(options.file, "original", hunk.originalRanges),
           ...toRanges(options.file, "modified", hunk.modifiedRanges),
         ],
-      })).filter((candidate) => candidate.ranges.length > 0)
+      }))
     : [{ symbol: null, patch: options.patch, ranges: fallbackRanges(options.file) }];
+  const rangedCandidates = candidates.filter((candidate) => candidate.ranges.length > 0);
 
-  return candidates.map((candidate) => {
+  return rangedCandidates.map((candidate) => {
     const identity = {
       sourceFingerprint: options.sourceFingerprint,
       fileId: options.file.id,

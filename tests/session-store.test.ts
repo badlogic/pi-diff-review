@@ -9,6 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import * as sessionStore from "../src/session-store.js";
 import { createFallbackAnalysis } from "../src/analysis.js";
+import { compileProvisionalReviewMap } from "../src/provisional-review-map.js";
+import { extractReviewChangeUnits } from "../src/review-change-units.js";
 import { runReviewSessionStartupPersistence } from "../src/review-session-startup.js";
 import {
   buildReviewDiffFingerprint,
@@ -338,6 +340,59 @@ test("diff fingerprint is stable for the same patches and changes when patches c
   assert.equal(first.hash, second.hash);
   assert.notEqual(first.hash, changed.hash);
   assert.equal(first.fileCount, 1);
+});
+
+test("initial session persistence accepts a diff containing an empty added file", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-diff-review-empty-file-session-"));
+  const storagePath = join(root, "session.json");
+  const reviewDataset = dataset(["src/empty.py"]);
+  const emptyFile = reviewDataset.files[0]!;
+  emptyFile.worktreeStatus = "added";
+  emptyFile.gitDiff = {
+    status: "added",
+    oldPath: null,
+    newPath: emptyFile.path,
+    displayPath: emptyFile.path,
+    hasOriginal: false,
+    hasModified: true,
+    addedLines: 0,
+    deletedLines: 0,
+    commentableOriginalLines: [],
+    commentableModifiedLines: [],
+  };
+  const emptyPatch = [
+    `diff --git a/${emptyFile.path} b/${emptyFile.path}`,
+    "new file mode 100644",
+    "index 00000000..e69de29b",
+  ].join("\n");
+  const fingerprint = await buildReviewDiffFingerprint(
+    mockPi() as never,
+    reviewDataset,
+    async () => emptyPatch,
+  );
+  const units = extractReviewChangeUnits({
+    sourceFingerprint: fingerprint.hash,
+    file: emptyFile,
+    patch: emptyPatch,
+    commitIds: [],
+  });
+  const map = compileProvisionalReviewMap({
+    sourceFingerprint: fingerprint.hash,
+    units,
+    commits: reviewDataset.commits,
+  });
+  const analysis = createFallbackAnalysis(reviewDataset, "initial");
+
+  assert.equal(sessionStore.isReviewMap(map), true);
+  await saveReviewSession(storagePath, buildReviewSessionRecord({
+    sourceKey: fingerprint.sourceKey,
+    fingerprint,
+    analysis,
+    snapshot: { map },
+  }));
+  const stored = await loadReviewSession(storagePath);
+  assert.deepEqual(stored?.snapshot.map, map);
+  await rm(root, { recursive: true, force: true });
 });
 
 test("session resolution restores cached analysis when fingerprint matches", async () => {
