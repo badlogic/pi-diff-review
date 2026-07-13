@@ -56,6 +56,24 @@ export function composeReviewPrompt(files: ReviewFile[], payload: ReviewSubmitPa
     lines.push("");
   }
 
+  const acceptedFindings = payload.acceptedFindings.filter((finding) => finding.body.trim().length > 0);
+  if (acceptedFindings.length > 0) {
+    lines.push("Accepted AI findings");
+    lines.push("");
+    acceptedFindings.forEach((finding, index) => {
+      lines.push(`${index + 1}. ${finding.body.trim()}`);
+      lines.push("");
+    });
+  }
+
+  const summaryBody = payload.approvalPacket.body.trim();
+  if (summaryBody.length > 0) {
+    lines.push("Review summary");
+    lines.push("");
+    lines.push(summaryBody);
+    lines.push("");
+  }
+
   payload.comments.forEach((comment, index) => {
     const file = fileMap.get(comment.fileId);
     lines.push(`${index + 1}. ${formatLocation(comment, file)}`);

@@ -1,0 +1,8 @@
+[
+  {"id":"schema","expectedMaxChapters":4,"permitsSplitFile":false},
+  {"id":"api","expectedMaxChapters":4,"permitsSplitFile":false},
+  {"id":"deletion-heavy","expectedMaxChapters":4,"permitsSplitFile":false},
+  {"id":"frontend","expectedMaxChapters":4,"permitsSplitFile":false},
+  {"id":"small-fix","expectedMaxChapters":1,"permitsSplitFile":false},
+  {"id":"cross-cutting","expectedMaxChapters":8,"permitsSplitFile":true}
+]
