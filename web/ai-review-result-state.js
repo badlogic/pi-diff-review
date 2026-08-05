@@ -1,3 +1,5 @@
+import { firstValidFindingLocation } from "./finding-navigation-state.js";
+
 const verdictLabels = Object.freeze({
   approve: "Approve",
   comment: "Comment",
@@ -6,6 +8,33 @@ const verdictLabels = Object.freeze({
 
 function stringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+}
+
+function readableFindingId(id) {
+  const words = String(id || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return words ? `${words.charAt(0).toUpperCase()}${words.slice(1)}` : "Unknown finding";
+}
+
+function unresolvedFindingItems(approvalPacket, findings) {
+  const findingsById = new Map(
+    (Array.isArray(findings) ? findings : [])
+      .filter((finding) => finding && typeof finding.id === "string")
+      .map((finding) => [finding.id, finding]),
+  );
+  return stringArray(approvalPacket.unresolvedFindings).map((id) => {
+    const finding = findingsById.get(id);
+    return {
+      id,
+      title: typeof finding?.title === "string" && finding.title.trim() ? finding.title : readableFindingId(id),
+      severity: typeof finding?.severity === "string" ? finding.severity : "unknown",
+      confidence: typeof finding?.confidence === "string" ? finding.confidence : "unknown",
+      hasLocation: finding ? firstValidFindingLocation(finding) != null : false,
+    };
+  });
 }
 
 function lifecycleFor(aiReview, aiReviewCompleted) {
@@ -57,6 +86,6 @@ export function buildAiReviewResultState(input = {}) {
     summary: complete && typeof approvalPacket.summary === "string" ? approvalPacket.summary : "",
     body: complete && typeof approvalPacket.body === "string" ? approvalPacket.body : "",
     acceptedRisks: complete ? stringArray(approvalPacket.acceptedRisks) : [],
-    unresolvedFindings: complete ? stringArray(approvalPacket.unresolvedFindings) : [],
+    unresolvedFindings: complete ? unresolvedFindingItems(approvalPacket, analysis.findings) : [],
   };
 }

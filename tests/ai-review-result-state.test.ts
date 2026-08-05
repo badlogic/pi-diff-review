@@ -59,6 +59,48 @@ test("validated findings and request-changes verdict are counted", () => {
   assert.equal(result.verdictLabel, "Request changes");
 });
 
+test("unresolved finding IDs resolve to human review details", () => {
+  const result = buildAiReviewResultState({
+    aiReview: { status: "done" },
+    analysis: {
+      findings: [{
+        id: "normalize-allow-list-urls",
+        title: "Normalize allow-list URLs to hosts",
+        severity: "medium",
+        confidence: "high",
+        locations: [{ fileId: "src/config.ts", side: "modified", line: 12 }],
+      }],
+      approvalPacket: { ...approvalPacket, unresolvedFindings: ["normalize-allow-list-urls"] },
+    },
+  });
+
+  assert.deepEqual(result.unresolvedFindings, [{
+    id: "normalize-allow-list-urls",
+    title: "Normalize allow-list URLs to hosts",
+    severity: "medium",
+    confidence: "high",
+    hasLocation: true,
+  }]);
+});
+
+test("unknown saved finding IDs remain readable", () => {
+  const result = buildAiReviewResultState({
+    aiReview: { status: "done" },
+    analysis: {
+      findings: [],
+      approvalPacket: { ...approvalPacket, unresolvedFindings: ["legacy_unknown-id"] },
+    },
+  });
+
+  assert.deepEqual(result.unresolvedFindings, [{
+    id: "legacy_unknown-id",
+    title: "Legacy unknown id",
+    severity: "unknown",
+    confidence: "unknown",
+    hasLocation: false,
+  }]);
+});
+
 test("running analysis suppresses stale completion details", () => {
   const result = buildAiReviewResultState({
     aiReview: {

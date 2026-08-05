@@ -20,6 +20,8 @@ import { buildAiReviewResultState } from "./ai-review-result-state.js";
 import { createCommentEditorSavePolicy } from "./comment-editor-save-policy.js";
 import { createCommentEditBuffer } from "./comment-edit-buffer.js";
 import { fileLoadView, isCurrentFileReply } from "./file-load-state.js";
+import { firstValidFindingLocation } from "./finding-navigation-state.js";
+import { buildHeaderStatusState, githubThreadLabel } from "./header-status-state.js";
 import { detachDiffEditorModels, replaceDiffEditorModels } from "./model-lifecycle.js";
 import { applyAuthoritativePublishedCommentState } from "./publish-comment-state.js";
 import { expandDisclosure, isDisclosureExpanded, toggleDisclosure } from "./review-disclosure-state.js";
@@ -375,9 +377,19 @@ function currentUnresolvedGithubThreads() {
 }
 
 function updateGithubThreadCount() {
-  if (!reviewData.source?.github) return;
+  if (!reviewData.source?.github) {
+    githubThreadCountButton.classList.add("hidden");
+    return;
+  }
   const count = unresolvedThreadCount(state.githubContext);
-  githubThreadCountButton.textContent = `◌ ${count}`;
+  const label = githubThreadLabel(count);
+  if (!label) {
+    githubThreadCountButton.textContent = "";
+    githubThreadCountButton.classList.add("hidden");
+    return;
+  }
+  githubThreadCountButton.textContent = label;
+  githubThreadCountButton.setAttribute("aria-label", `Open ${label}`);
   githubThreadCountButton.classList.remove("hidden");
 }
 
@@ -780,8 +792,18 @@ function setSummary(summary, counts = null, progress = null) {
   const reviewed = Math.max(0, Math.min(total, Number(progress.reviewed || 0)));
   const percent = total > 0 ? Math.round((reviewed / total) * 100) : 0;
   const staged = Math.max(0, Number(progress.staged || 0));
+  const headerStatus = buildHeaderStatusState({
+    detail: summary,
+    aiStatus: progress.aiStatus,
+    reviewed,
+    total,
+    staged,
+  });
+  summaryEl.setAttribute("aria-label", `Open overall AI review: ${headerStatus.accessibleLabel}`);
+  summaryEl.title = headerStatus.accessibleLabel;
   summaryEl.innerHTML = `
-    <span class="flex min-w-0 items-center gap-2">
+    <span class="xl:hidden">${escapeHtml(headerStatus.compact)}</span>
+    <span class="hidden min-w-0 items-center gap-2 xl:flex">
       ${stats ? `<span class="shrink-0">${stats}</span>` : ""}
       <span class="min-w-0 truncate">${escapeHtml(summary)}</span>
       <span class="shrink-0 rounded bg-[#161b22] px-1.5 py-0.5 text-[10px] font-medium text-review-muted">${reviewed}/${total} reviewed</span>
@@ -2453,7 +2475,7 @@ function openFindingLocation(location, options = {}) {
 }
 
 function firstExistingFindingLocation(finding) {
-  return (finding.locations || []).find((item) => getFileById(item.fileId)) || null;
+  return firstValidFindingLocation(finding, (fileId) => getFileById(fileId) != null);
 }
 
 function openFirstFindingLocation(finding) {
@@ -2529,6 +2551,13 @@ function renderTree() {
       reviewed: reviewProgress.reviewed,
       total: reviewProgress.total,
       staged: comments,
+      aiStatus: state.aiReview.status === "done" || state.aiReviewCompleted
+        ? "done"
+        : state.aiReview.status === "running"
+          ? "running"
+          : state.aiReview.status === "failed"
+            ? "failed"
+            : "queued",
     },
   );
   updateToggleButtons();
@@ -3538,6 +3567,17 @@ function aiReviewListHtml(items, emptyMessage) {
   return `<ul class="space-y-2 text-sm leading-6 text-review-text">${items.map((item) => `<li class="flex gap-2"><span class="text-[#d2a8ff]">•</span><span>${escapeHtml(item)}</span></li>`).join("")}</ul>`;
 }
 
+function unresolvedFindingsHtml(items) {
+  if (items.length === 0) return `<p class="text-sm text-review-muted">No unresolved AI findings.</p>`;
+  return `<ul class="space-y-2 text-sm leading-6 text-review-text">${items.map((item) => {
+    const label = `${humanizeToken(item.severity)} · ${item.title}`;
+    const content = `<span class="text-[#d2a8ff]">•</span><span>${escapeHtml(label)}</span>`;
+    return item.hasLocation
+      ? `<li><button type="button" data-unresolved-finding-id="${escapeHtml(item.id)}" class="flex w-full cursor-pointer gap-2 rounded text-left hover:text-white focus:outline-none focus:ring-1 focus:ring-[#8957e5]/50">${content}</button></li>`
+      : `<li class="flex gap-2">${content}</li>`;
+  }).join("")}</ul>`;
+}
+
 function overallAiReviewCardHtml() {
   const result = currentAiReviewResult();
   const complete = result.lifecycle === "complete";
@@ -3596,7 +3636,7 @@ function overallAiReviewResultHtml() {
         <div class="mt-4 grid gap-4 lg:grid-cols-2">
           <section class="rounded-lg border border-review-border bg-[#010409] p-5">
             <h2 class="mb-3 text-sm font-semibold text-white">Unresolved findings</h2>
-            ${aiReviewListHtml(result.unresolvedFindings, "No unresolved AI findings.")}
+            ${unresolvedFindingsHtml(result.unresolvedFindings)}
           </section>
           <section class="rounded-lg border border-review-border bg-[#010409] p-5">
             <h2 class="mb-3 text-sm font-semibold text-white">Accepted risks</h2>
@@ -3743,6 +3783,12 @@ function bindAiReviewSurfaceActions(container) {
   });
   container.querySelectorAll('[data-action="submit-review"]').forEach((button) => {
     button.addEventListener("click", () => submitReview());
+  });
+  container.querySelectorAll("[data-unresolved-finding-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const finding = getReviewFinding(button.getAttribute("data-unresolved-finding-id"));
+      if (finding) openFirstFindingLocation(finding);
+    });
   });
 }
 
