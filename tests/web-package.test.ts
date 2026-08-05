@@ -53,7 +53,9 @@ test("web build produces a CSP-protected shell that references only bundled loca
   assert.deepEqual(references.sort(), ["./csp-monitor.js", "./dist/review.js"]);
   for (const reference of references) assert.equal(existsSync(resolve(root, "web", reference)), true, reference);
   assert.doesNotMatch(shell, /dist\/review\.css/);
-  assert.match(readFileSync(resolve(root, "web/dist/review.js"), "utf8"), /pi-diff-review-styles/);
+  const reviewArtifact = resolve(root, "web/dist/review.js");
+  assert.match(readFileSync(reviewArtifact, "utf8"), /pi-diff-review-styles/);
+  assert.ok(statSync(reviewArtifact).size <= 6 * 1024 * 1024, "web/dist/review.js must stay at or below 6 MiB");
 });
 
 test("concurrent web builds atomically replace one artifact without removing the live dist", { timeout: 30_000 }, async () => {
@@ -461,8 +463,8 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
     assert.equal(result.resources.some((url) => url.endsWith("/dist/review.css")), false);
     assert.equal([...result.styles, ...result.scripts, ...result.resources].some((url) => /^https?:/i.test(url)), false);
     assert.equal(result.workerError, null);
-    assert.deepEqual(result.workers.sort(), ["css", "editor", "html", "json", "typescript"]);
-    assert.equal(result.workerObjectUrlsBeforeDispose, 5);
+    assert.deepEqual(result.workers.sort(), ["editor", "json"]);
+    assert.equal(result.workerObjectUrlsBeforeDispose, 2);
     assert.equal(result.workerObjectUrlsAfterDispose, 0);
     assert.equal(result.loadingObserved, true);
     assert.equal(result.failureObserved, true);

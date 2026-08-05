@@ -14,6 +14,7 @@ const webRoot = join(root, "web");
 const distRoot = join(webRoot, "dist");
 const monaco = (path) => require.resolve(`monaco-editor/${path}`);
 const tailwindCli = join(dirname(require.resolve("@tailwindcss/cli/package.json")), "dist", "index.mjs");
+const MAX_REVIEW_ARTIFACT_BYTES = 6 * 1024 * 1024;
 
 async function replaceReviewArtifact(contents) {
   await mkdir(distRoot, { recursive: true });
@@ -51,9 +52,6 @@ try {
   const workerEntries = {
     editor: monaco("esm/vs/editor/editor.worker.js"),
     json: monaco("esm/vs/language/json/json.worker.js"),
-    css: monaco("esm/vs/language/css/css.worker.js"),
-    html: monaco("esm/vs/language/html/html.worker.js"),
-    typescript: monaco("esm/vs/language/typescript/ts.worker.js"),
   };
   const workerBuild = await build({
     absWorkingDir: root,
@@ -126,7 +124,12 @@ try {
   ]);
   const styles = `${tailwindCss}\n${monacoCss}`;
   const styleBootstrap = `(()=>{const marker="pi-diff-review-styles";if(document.querySelector("style[data-pi-diff-review-styles]"))return;const style=document.createElement("style");style.setAttribute("data-pi-diff-review-styles",marker);style.textContent=${JSON.stringify(styles)};document.head.append(style)})();\n`;
-  await replaceReviewArtifact(`${styleBootstrap}${reviewJavaScript}`);
+  const reviewArtifact = `${styleBootstrap}${reviewJavaScript}`;
+  const artifactBytes = Buffer.byteLength(reviewArtifact, "utf8");
+  if (artifactBytes > MAX_REVIEW_ARTIFACT_BYTES) {
+    throw new Error(`web/dist/review.js is ${artifactBytes} bytes; limit is ${MAX_REVIEW_ARTIFACT_BYTES} bytes (6 MiB).`);
+  }
+  await replaceReviewArtifact(reviewArtifact);
 } catch (error) {
   primaryError = error;
   throw error;

@@ -1,8 +1,9 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api.js";
-import "monaco-editor/esm/vs/language/typescript/monaco.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js";
 import "monaco-editor/esm/vs/language/json/monaco.contribution.js";
-import "monaco-editor/esm/vs/language/css/monaco.contribution.js";
-import "monaco-editor/esm/vs/language/html/monaco.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/css/css.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/html/html.contribution.js";
 import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js";
 import "monaco-editor/esm/vs/basic-languages/shell/shell.contribution.js";
 import "monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution.js";
@@ -13,15 +14,13 @@ import "monaco-editor/esm/vs/basic-languages/python/python.contribution.js";
 import "monaco-editor/esm/vs/basic-languages/go/go.contribution.js";
 import editorWorkerSource from "review-worker:editor";
 import jsonWorkerSource from "review-worker:json";
-import cssWorkerSource from "review-worker:css";
-import htmlWorkerSource from "review-worker:html";
-import typescriptWorkerSource from "review-worker:typescript";
 import { buildAiReviewResultState } from "./ai-review-result-state.js";
 import { createCommentEditorSavePolicy } from "./comment-editor-save-policy.js";
 import { createCommentEditBuffer } from "./comment-edit-buffer.js";
 import { fileLoadView, isCurrentFileReply } from "./file-load-state.js";
 import { firstValidFindingLocation } from "./finding-navigation-state.js";
 import { buildHeaderStatusState, githubThreadLabel } from "./header-status-state.js";
+import { languageForPath } from "./language-for-path.js";
 import { detachDiffEditorModels, replaceDiffEditorModels } from "./model-lifecycle.js";
 import { applyAuthoritativePublishedCommentState } from "./publish-comment-state.js";
 import { expandDisclosure, isDisclosureExpanded, toggleDisclosure } from "./review-disclosure-state.js";
@@ -43,25 +42,12 @@ import {
 const localWorkerSources = Object.freeze({
   editor: editorWorkerSource,
   json: jsonWorkerSource,
-  css: cssWorkerSource,
-  html: htmlWorkerSource,
-  typescript: typescriptWorkerSource,
 });
 const workerObjectUrls = new Map();
 const workerProbe = Object.freeze({ __piDiffReviewWorkerProbe: "v1" });
 
 function workerKindForLabel(label) {
-  return {
-    json: "json",
-    css: "css",
-    scss: "css",
-    less: "css",
-    html: "html",
-    handlebars: "html",
-    razor: "html",
-    typescript: "typescript",
-    javascript: "typescript",
-  }[label] || "editor";
+  return label === "json" ? "json" : "editor";
 }
 
 function workerObjectUrl(kind) {
@@ -93,9 +79,6 @@ async function verifyLocalWorkers() {
   const workers = [
     ["editor", "editorWorkerService"],
     ["json", "json"],
-    ["css", "css"],
-    ["html", "html"],
-    ["typescript", "typescript"],
   ];
   const verified = [];
   for (const [name, label] of workers) {
@@ -630,25 +613,6 @@ function scheduleSessionSave() {
     snapshot: buildSessionSnapshot(),
   });
   sessionSaveScheduler.schedule();
-}
-
-function inferLanguage(path) {
-  if (!path) return "plaintext";
-  const lower = path.toLowerCase();
-  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "typescript";
-  if (lower.endsWith(".js") || lower.endsWith(".jsx") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) return "javascript";
-  if (lower.endsWith(".json")) return "json";
-  if (lower.endsWith(".md")) return "markdown";
-  if (lower.endsWith(".css")) return "css";
-  if (lower.endsWith(".html")) return "html";
-  if (lower.endsWith(".sh")) return "shell";
-  if (lower.endsWith(".yml") || lower.endsWith(".yaml")) return "yaml";
-  if (lower.endsWith(".rs")) return "rust";
-  if (lower.endsWith(".java")) return "java";
-  if (lower.endsWith(".kt")) return "kotlin";
-  if (lower.endsWith(".py")) return "python";
-  if (lower.endsWith(".go")) return "go";
-  return "plaintext";
 }
 
 function scopeLabel(scope) {
@@ -3869,7 +3833,7 @@ function mountFile(options = {}) {
 
   const preserveScroll = options.preserveScroll === true;
   const scrollState = preserveScroll ? captureScrollState() : null;
-  const language = inferLanguage(getScopeFilePath(file) || file.path);
+  const language = languageForPath(getScopeFilePath(file) || file.path);
   const requestState = getRequestState(file.id, state.currentScope);
   const fileView = fileLoadView({ path: getScopeDisplayPath(file, state.currentScope), ...requestState });
   const reviewed = isFileReviewed(file.id);
