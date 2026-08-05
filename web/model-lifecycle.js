@@ -24,3 +24,10 @@ export function replaceDiffEditorModels(editor, current, factories) {
 
   return next;
 }
+
+export function detachDiffEditorModels(editor, current) {
+  editor.setModel(null);
+  current.original?.dispose();
+  current.modified?.dispose();
+  return { original: null, modified: null };
+}

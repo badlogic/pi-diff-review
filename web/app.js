@@ -19,7 +19,8 @@ import typescriptWorkerSource from "review-worker:typescript";
 import { buildAiReviewResultState } from "./ai-review-result-state.js";
 import { createCommentEditorSavePolicy } from "./comment-editor-save-policy.js";
 import { createCommentEditBuffer } from "./comment-edit-buffer.js";
-import { replaceDiffEditorModels } from "./model-lifecycle.js";
+import { fileLoadView, isCurrentFileReply } from "./file-load-state.js";
+import { detachDiffEditorModels, replaceDiffEditorModels } from "./model-lifecycle.js";
 import { applyAuthoritativePublishedCommentState } from "./publish-comment-state.js";
 import { expandDisclosure, isDisclosureExpanded, toggleDisclosure } from "./review-disclosure-state.js";
 import {
@@ -308,6 +309,10 @@ const currentFileLabelEl = document.getElementById("current-file-label");
 const modeHintEl = document.getElementById("mode-hint");
 const fileCommentsContainer = document.getElementById("file-comments-container");
 const editorContainerEl = document.getElementById("editor-container");
+const editorStageEl = document.getElementById("editor-stage");
+const editorStatusEl = document.getElementById("editor-status");
+const editorStatusTitleEl = document.getElementById("editor-status-title");
+const editorStatusMessageEl = document.getElementById("editor-status-message");
 const chapterBriefContainerEl = document.getElementById("chapter-brief-container");
 const aiReviewResultContainerEl = document.getElementById("ai-review-result-container");
 const insightPanelEl = document.getElementById("insight-panel");
@@ -532,6 +537,7 @@ let monacoApi = null;
 let diffEditor = null;
 let originalModel = null;
 let modifiedModel = null;
+let mountedContentKey = null;
 let originalDecorations = [];
 let modifiedDecorations = [];
 let originalKeyboardDecorations = [];
@@ -3477,19 +3483,29 @@ function renderFileComments() {
   });
 }
 
-function getPlaceholderContents(file, scope) {
-  const path = getScopeDisplayPath(file, scope);
-  const requestState = getRequestState(file.id, scope);
-  if (requestState.error) {
-    const body = `Failed to load ${path}\n\n${requestState.error}`;
-    return { originalContent: body, modifiedContent: body };
-  }
-  const body = `Loading ${path}...`;
-  return { originalContent: body, modifiedContent: body };
+function detachMountedModels() {
+  if (!diffEditor || (!originalModel && !modifiedModel)) return;
+  const next = detachDiffEditorModels(diffEditor, { original: originalModel, modified: modifiedModel });
+  originalModel = next.original;
+  modifiedModel = next.modified;
+  mountedContentKey = null;
 }
 
-function getMountedContents(file, scope = state.currentScope) {
-  return getRequestState(file.id, scope).contents || getPlaceholderContents(file, scope);
+function showEditorStatus(view) {
+  detachMountedModels();
+  editorContainerEl.classList.add("hidden");
+  editorStatusEl.classList.remove("hidden");
+  editorStatusEl.classList.add("flex");
+  editorStatusEl.setAttribute("data-status", view.kind);
+  editorStatusTitleEl.textContent = view.title;
+  editorStatusMessageEl.textContent = view.message;
+}
+
+function showEditorContents() {
+  editorStatusEl.classList.add("hidden");
+  editorStatusEl.classList.remove("flex");
+  editorStatusEl.removeAttribute("data-status");
+  editorContainerEl.classList.remove("hidden");
 }
 
 function currentAiReviewResult() {
@@ -3738,7 +3754,7 @@ function clearFileCanvasForOverview() {
     originalKeyboardDecorations = diffEditor.getOriginalEditor().deltaDecorations(originalKeyboardDecorations, []);
     modifiedKeyboardDecorations = diffEditor.getModifiedEditor().deltaDecorations(modifiedKeyboardDecorations, []);
   }
-  editorContainerEl.classList.add("hidden");
+  editorStageEl.classList.add("hidden");
   fileCommentsContainer.className = "hidden border-b border-review-border bg-[#0d1117] px-4 py-0";
 }
 
@@ -3792,21 +3808,11 @@ function mountFile(options = {}) {
   state.activeCanvas = "file";
   chapterBriefContainerEl.classList.add("hidden");
   aiReviewResultContainerEl.classList.add("hidden");
-  editorContainerEl.classList.remove("hidden");
+  editorStageEl.classList.remove("hidden");
   if (!file) {
     currentFileLabelEl.textContent = "No file selected";
     clearViewZones();
-    const nextModels = replaceDiffEditorModels(
-      diffEditor,
-      { original: originalModel, modified: modifiedModel },
-      {
-        createOriginal: () => monacoApi.editor.createModel("", "plaintext"),
-        createModified: () => monacoApi.editor.createModel("", "plaintext"),
-      },
-    );
-    originalModel = nextModels.original;
-    modifiedModel = nextModels.modified;
-    applyEditorOptions();
+    showEditorStatus({ kind: "empty", title: "No file selected", message: "Choose a changed file from the review plan." });
     updateDecorations();
     renderFileComments();
     requestAnimationFrame(layoutEditor);
@@ -3818,7 +3824,8 @@ function mountFile(options = {}) {
   const preserveScroll = options.preserveScroll === true;
   const scrollState = preserveScroll ? captureScrollState() : null;
   const language = inferLanguage(getScopeFilePath(file) || file.path);
-  const contents = getMountedContents(file, state.currentScope);
+  const requestState = getRequestState(file.id, state.currentScope);
+  const fileView = fileLoadView({ path: getScopeDisplayPath(file, state.currentScope), ...requestState });
   const reviewed = isFileReviewed(file.id);
   const chapter = chapterForFile(file.id);
   const activeVisit = visitsForFile(file.id).find((visit) => visit.id === state.activeVisitId) || null;
@@ -3839,16 +3846,29 @@ function mountFile(options = {}) {
     </span>
   `;
 
-  const nextModels = replaceDiffEditorModels(
-    diffEditor,
-    { original: originalModel, modified: modifiedModel },
-    {
-      createOriginal: () => monacoApi.editor.createModel(contents.originalContent, language),
-      createModified: () => monacoApi.editor.createModel(contents.modifiedContent, language),
-    },
-  );
-  originalModel = nextModels.original;
-  modifiedModel = nextModels.modified;
+  if (fileView.kind !== "ready") {
+    showEditorStatus(fileView);
+    renderFileComments();
+    return;
+  }
+
+  showEditorContents();
+  const contents = fileView.contents;
+  const contentKey = cacheKey(state.currentScope, file.id);
+
+  if (mountedContentKey !== contentKey || !originalModel || !modifiedModel) {
+    const nextModels = replaceDiffEditorModels(
+      diffEditor,
+      { original: originalModel, modified: modifiedModel },
+      {
+        createOriginal: () => monacoApi.editor.createModel(contents.originalContent, language),
+        createModified: () => monacoApi.editor.createModel(contents.modifiedContent, language),
+      },
+    );
+    originalModel = nextModels.original;
+    modifiedModel = nextModels.modified;
+    mountedContentKey = contentKey;
+  }
   applyEditorOptions();
   syncViewZones();
   updateDecorations();
@@ -4152,6 +4172,7 @@ window.__reviewReceive = function (message) {
   state.selectedCommitSha = previousSelectedCommitSha;
 
   if (message.type === "file-data") {
+    if (!isCurrentFileReply(state.pendingRequestIds[key], message.requestId)) return;
     state.fileContents[key] = {
       originalContent: message.originalContent,
       modifiedContent: message.modifiedContent,
@@ -4166,6 +4187,7 @@ window.__reviewReceive = function (message) {
   }
 
   if (message.type === "file-error") {
+    if (!isCurrentFileReply(state.pendingRequestIds[key], message.requestId)) return;
     state.fileErrors[key] = message.message || "Unknown error";
     delete state.pendingRequestIds[key];
     renderTree();

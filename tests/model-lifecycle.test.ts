@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { replaceDiffEditorModels } from "../web/model-lifecycle.js";
+import { detachDiffEditorModels, replaceDiffEditorModels } from "../web/model-lifecycle.js";
 
 test("diff models are detached before the active models are disposed", () => {
   const events: string[] = [];
@@ -30,6 +30,20 @@ test("diff models are detached before the active models are disposed", () => {
     "dispose old modified",
     "attach next",
   ]);
+});
+
+test("loading files detach and dispose the active diff models", () => {
+  const events: string[] = [];
+  const result = detachDiffEditorModels(
+    { setModel: (model: unknown) => events.push(model == null ? "detach" : "attach") },
+    {
+      original: { dispose: () => events.push("dispose original") },
+      modified: { dispose: () => events.push("dispose modified") },
+    },
+  );
+
+  assert.deepEqual(result, { original: null, modified: null });
+  assert.deepEqual(events, ["detach", "dispose original", "dispose modified"]);
 });
 
 test("partial next-model creation is cleaned up while current models stay attached and alive", () => {

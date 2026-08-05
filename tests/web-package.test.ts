@@ -214,6 +214,9 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
         let workerError = null;
         let workerObjectUrlsBeforeDispose = -1;
         let workerObjectUrlsAfterDispose = -1;
+        let loadingObserved = false;
+        let failureObserved = false;
+        let failureMessage = "";
         try {
           const diagnostics = window.__reviewWorkerDiagnostics;
           if (typeof diagnostics?.verifyLocalWorkers !== "function") {
@@ -223,6 +226,16 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
           workerObjectUrlsBeforeDispose = diagnostics.activeObjectUrlCount();
           diagnostics.dispose();
           workerObjectUrlsAfterDispose = diagnostics.activeObjectUrlCount();
+          document.querySelector('#file-tree [title="src/slow.ts"] button')?.click();
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          loadingObserved = document.getElementById("editor-status")?.getAttribute("data-status") === "loading";
+          document.querySelector('#file-tree [title="src/fast.ts"] button')?.click();
+          await new Promise((resolve) => setTimeout(resolve, 160));
+          document.querySelector('#file-tree [title="src/failed.ts"] button')?.click();
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          failureObserved = document.getElementById("editor-status")?.getAttribute("data-status") === "error";
+          failureMessage = document.getElementById("editor-status-message")?.textContent || "";
+          document.querySelector('#file-tree [title="src/fast.ts"] button')?.click();
           await new Promise((resolve) => setTimeout(resolve, 100));
         } catch (error) {
           workerError = error instanceof Error ? error.message : String(error);
@@ -236,6 +249,12 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
           workerError,
           workerObjectUrlsBeforeDispose,
           workerObjectUrlsAfterDispose,
+          loadingObserved,
+          failureObserved,
+          failureMessage,
+          runtimeErrors: window.__reviewRuntimeErrors ?? [{ type: "monitor-unavailable", message: "" }],
+          editorText: Array.from(document.querySelectorAll(".monaco-editor .view-lines"), (node) => node.textContent || "").join("\\n"),
+          editorStatus: document.getElementById("editor-status")?.getAttribute("data-status") ?? null,
           securityPolicyViolations: window.__reviewSecurityPolicyViolations ?? [{
             violatedDirective: "monitor-unavailable",
             blockedURI: "",
@@ -247,11 +266,43 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
       nativeWindow.close();
     },
   };
+  const smokeFile = {
+    id: "src/fast.ts",
+    path: "src/fast.ts",
+    worktreeStatus: "modified" as const,
+    hasWorkingTreeFile: true,
+    inGitDiff: true,
+    inLastCommit: false,
+    gitDiff: {
+      status: "modified" as const,
+      oldPath: "src/fast.ts",
+      newPath: "src/fast.ts",
+      displayPath: "src/fast.ts",
+      hasOriginal: true,
+      hasModified: true,
+      commentableOriginalLines: [{ start: 1, end: 1 }],
+      commentableModifiedLines: [{ start: 1, end: 1 }],
+    },
+    lastCommit: null,
+    commitComparisons: {},
+  };
+  const slowFile = {
+    ...smokeFile,
+    id: "src/slow.ts",
+    path: "src/slow.ts",
+    gitDiff: { ...smokeFile.gitDiff, oldPath: "src/slow.ts", newPath: "src/slow.ts", displayPath: "src/slow.ts" },
+  };
+  const failedFile = {
+    ...smokeFile,
+    id: "src/failed.ts",
+    path: "src/failed.ts",
+    gitDiff: { ...smokeFile.gitDiff, oldPath: "src/failed.ts", newPath: "src/failed.ts", displayPath: "src/failed.ts" },
+  };
   const bootstrap: ReviewWindowData = {
     repoRoot: "/tmp/review-smoke",
     workingRoot: "/tmp/review-smoke",
-    files: [],
-    analysisFileIds: [],
+    files: [smokeFile, slowFile, failedFile],
+    analysisFileIds: [smokeFile.id, slowFile.id, failedFile.id],
     commits: [],
     source: {
       kind: "local-working-tree",
@@ -277,9 +328,9 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
       changeUnits: [],
       chapters: [],
       coverage: {
-        fileCount: 0,
-        originalLineCount: 0,
-        modifiedLineCount: 0,
+        fileCount: 3,
+        originalLineCount: 3,
+        modifiedLineCount: 3,
         unmappedFileCount: 0,
         unmappedOriginalLineCount: 0,
         unmappedModifiedLineCount: 0,
@@ -294,9 +345,9 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
       chapters: [],
       findings: [],
       coverage: {
-        fileCount: 0,
-        originalLineCount: 0,
-        modifiedLineCount: 0,
+        fileCount: 3,
+        originalLineCount: 3,
+        modifiedLineCount: 3,
         unmappedFileCount: 0,
         unmappedOriginalLineCount: 0,
         unmappedModifiedLineCount: 0,
@@ -312,7 +363,7 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
     },
   };
   const protocol: Omit<RendererProtocolContext, "sessionId" | "capability"> = {
-    files: new Map(),
+    files: new Map([smokeFile, slowFile, failedFile].map((file) => [file.id, { scopes: new Set(["git-diff"] as const), commitShas: new Set<string>() }])),
     commitShas: new Set(),
     findingIds: new Set(),
     chapterIds: new Set(),
@@ -326,6 +377,12 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
     workerError: string | null;
     workerObjectUrlsBeforeDispose: number;
     workerObjectUrlsAfterDispose: number;
+    loadingObserved: boolean;
+    failureObserved: boolean;
+    failureMessage: string;
+    runtimeErrors: Array<{ type: string; message: string }>;
+    editorText: string;
+    editorStatus: string | null;
     securityPolicyViolations: Array<{ violatedDirective: string; blockedURI: string }>;
   }>((resolveResult, reject) => {
     rejectBoot = reject;
@@ -341,6 +398,12 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
         workerError: message.workerError as string | null,
         workerObjectUrlsBeforeDispose: message.workerObjectUrlsBeforeDispose as number,
         workerObjectUrlsAfterDispose: message.workerObjectUrlsAfterDispose as number,
+        loadingObserved: message.loadingObserved as boolean,
+        failureObserved: message.failureObserved as boolean,
+        failureMessage: message.failureMessage as string,
+        runtimeErrors: message.runtimeErrors as Array<{ type: string; message: string }>,
+        editorText: message.editorText as string,
+        editorStatus: message.editorStatus as string | null,
         securityPolicyViolations: message.securityPolicyViolations as Array<{ violatedDirective: string; blockedURI: string }>,
       });
     });
@@ -352,7 +415,38 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
     bootstrap,
     protocol,
     bootTimeoutMs: 12_000,
-    onMessage: () => {},
+    onMessage: (message) => {
+      if (message.type !== "request-file") return;
+      if (message.fileId === failedFile.id) {
+        controller.sendHostMessage({
+          type: "file-error",
+          requestId: message.requestId,
+          fileId: message.fileId,
+          scope: message.scope,
+          message: "Permission denied",
+        });
+        return;
+      }
+      if (message.fileId === slowFile.id) {
+        setTimeout(() => controller.sendHostMessage({
+          type: "file-data",
+          requestId: message.requestId,
+          fileId: message.fileId,
+          scope: message.scope,
+          originalContent: "const slow = 'before';\n",
+          modifiedContent: "const slow = 'after';\n",
+        }), 100);
+        return;
+      }
+      controller.sendHostMessage({
+        type: "file-data",
+        requestId: message.requestId,
+        fileId: message.fileId,
+        scope: message.scope,
+        originalContent: "const answer = 41;\n",
+        modifiedContent: "const answer = 42;\n",
+      });
+    },
     onClosed: () => rejectBoot(new Error("Native shell closed before boot completed.")),
     onError: rejectBoot,
   });
@@ -370,6 +464,13 @@ test("macOS native shell loads local assets and completes the hidden boot handsh
     assert.deepEqual(result.workers.sort(), ["css", "editor", "html", "json", "typescript"]);
     assert.equal(result.workerObjectUrlsBeforeDispose, 5);
     assert.equal(result.workerObjectUrlsAfterDispose, 0);
+    assert.equal(result.loadingObserved, true);
+    assert.equal(result.failureObserved, true);
+    assert.equal(result.failureMessage, "Permission denied");
+    assert.equal(result.editorStatus, null);
+    assert.match(result.editorText, /answer/);
+    assert.equal(result.runtimeErrors.some((error) => /no diff result available/i.test(error.message)), false);
+    assert.deepEqual(result.runtimeErrors, []);
     assert.deepEqual(result.securityPolicyViolations, []);
   } finally {
     controller.dispose();

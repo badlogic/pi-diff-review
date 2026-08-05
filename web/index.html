@@ -62,7 +62,15 @@
       </div>
     </div>
     <div id="file-comments-container" class="hidden border-b border-review-border bg-[#0d1117] px-4 py-0"></div>
-    <div id="editor-container" class="min-h-0 min-w-0 flex-1"></div>
+    <div id="editor-stage" class="relative min-h-0 min-w-0 flex-1">
+      <div id="editor-container" class="absolute inset-0 min-h-0 min-w-0"></div>
+      <div id="editor-status" role="status" aria-live="polite" class="absolute inset-0 hidden items-center justify-center bg-[#0d1117] px-8 text-center">
+        <div class="max-w-lg rounded-lg border border-review-border bg-[#161b22] px-6 py-5 shadow-lg">
+          <div id="editor-status-title" class="text-sm font-semibold text-white"></div>
+          <div id="editor-status-message" class="mt-2 text-xs leading-5 text-review-muted"></div>
+        </div>
+      </div>
+    </div>
     <div id="chapter-brief-container" class="chapter-brief-view scrollbar-thin hidden min-h-0 min-w-0 flex-1 overflow-auto bg-[#0d1117]"></div>
     <div id="ai-review-result-container" class="ai-review-result-view scrollbar-thin hidden min-h-0 min-w-0 flex-1 overflow-auto bg-[#0d1117]"></div>
     </main>
